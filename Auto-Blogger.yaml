@@ -30,7 +30,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run script
-        run: python auto_blog.py
+        run: python Auto-Blogger.py
+        # Uncomment the next line if you want to pass the YouTube API key as well
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
