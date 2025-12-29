@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Estate Management Center</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+    
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    
+    .font-serif {
+      font-family: 'Lora', serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { 
+      Plus, Upload, Filter, CheckCircle2, Circle, AlertCircle, 
+      FileText, Phone, Mail, Calendar, Trash2, Edit2, Save, 
+      X, ChevronDown, ChevronRight, Search, Download 
+    } = lucide;
+
+    // Storage wrapper for localStorage
+    const storage = {
+      get: (key) => {
+        try {
+          const item = localStorage.getItem(key);
+          return item ? { value: item } : null;
+        } catch (error) {
+          console.error('Storage get error:', error);
+          return null;
+        }
+      },
+      set: (key, value) => {
+        try {
+          localStorage.setItem(key, value);
+          return { key, value };
+        } catch (error) {
+          console.error('Storage set error:', error);
+          return null;
+        }
+      }
+    };
+
+    // Main App Component
+    function EstateManager() {
+      const [benefits, setBenefits] = useState([]);
+      const [accounts, setAccounts] = useState([]);
+      const [tasks, setTasks] = useState([]);
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [loading, setLoading] = useState(true);
+      const [filterCategory, setFilterCategory] = useState('all');
+      const [searchTerm, setSearchTerm] = useState('');
+
+      useEffect(() => {
+        loadData();
+      }, []);
+
+      const loadData = () => {
+        try {
+          const benefitsData = storage.get('estate-benefits');
+          const accountsData = storage.get('estate-accounts');
+          const tasksData = storage.get('estate-tasks');
+
+          if (benefitsData?.value) setBenefits(JSON.parse(benefitsData.value));
+          if (accountsData?.value) setAccounts(JSON.parse(accountsData.value));
+          if (tasksData?.value) setTasks(JSON.parse(tasksData.value));
+
+          setLoading(false);
+        } catch (error) {
+          console.log('No existing data, starting fresh');
+          setLoading(false);
+        }
+      };
+
+      const saveData = (benefitsData, accountsData, tasksData) => {
+        try {
+          if (benefitsData !== null) storage.set('estate-benefits', JSON.stringify(benefitsData));
+          if (accountsData !== null) storage.set('estate-accounts', JSON.stringify(accountsData));
+          if (tasksData !== null) storage.set('estate-tasks', JSON.stringify(tasksData));
+        } catch (error) {
+          console.error('Error saving data:', error);
+        }
+      };
+
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-amber-50 via-stone-50 to-slate-100 flex items-center justify-center">
+            <div className="text-stone-600 text-lg">Loading estate information...</div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-amber-50 via-stone-50 to-slate-100">
+          <Header />
+          <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
+          
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                benefits={benefits} 
+                tasks={tasks} 
+                accounts={accounts}
+                setBenefits={setBenefits}
+                setTasks={setTasks}
+                saveData={saveData}
+              />
+            )}
+            {activeTab === 'benefits' && (
+              <BenefitsManager 
+                benefits={benefits} 
+                setBenefits={setBenefits}
+                saveData={saveData}
+                filterCategory={filterCategory}
+                setFilterCategory={setFilterCategory}
+                searchTerm={searchTerm}
+                setSearchTerm={setSearchTerm}
+              />
+            )}
+            {activeTab === 'accounts' && (
+              <AccountsManager 
+                accounts={accounts} 
+                setAccounts={setAccounts}
+                saveData={saveData}
+                searchTerm={searchTerm}
+                setSearchTerm={setSearchTerm}
+              />
+            )}
+            {activeTab === 'import' && (
+              <ImportManager 
+                accounts={accounts}
+                setAccounts={setAccounts}
+                saveData={saveData}
+              />
+            )}
+            {activeTab === 'guidance' && <NCGuidance />}
+          </main>
+        </div>
+      );
+    }
+
+    // Header Component
+    function Header() {
+      return (
+        <header className="bg-white border-b-2 border-stone-200 shadow-sm">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+            <h1 className="text-2xl sm:text-4xl font-serif text-stone-800 mb-2">Estate Management Center</h1>
+            <p className="text-sm sm:text-base text-stone-600 font-light">Organizing affairs with care and clarity</p>
+          </div>
+        </header>
+      );
+    }
+
+    // Navigation Component
+    function Navigation({ activeTab, setActiveTab }) {
+      const tabs = [
+        { id: 'dashboard', label: 'Dashboard', icon: FileText },
+        { id: 'benefits', label: 'Benefits', icon: CheckCircle2 },
+        { id: 'accounts', label: 'Accounts', icon: Circle },
+        { id: 'import', label: 'Import', icon: Upload },
+        { id: 'guidance', label: 'NC Guide', icon: AlertCircle }
+      ];
+
+      return (
+        <nav className="bg-white border-b border-stone-200 sticky top-0 z-10 shadow-sm overflow-x-auto">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6">
+            <div className="flex space-x-1">
+              {tabs.map(tab => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex items-center space-x-2 px-3 sm:px-6 py-3 sm:py-4 border-b-3 transition-all font-medium whitespace-nowrap text-sm sm:text-base ${
+                      activeTab === tab.id
+                        ? 'border-amber-600 text-amber-700 bg-amber-50'
+                        : 'border-transparent text-stone-600 hover:text-stone-800 hover:bg-stone-50'
+                    }`}
+                  >
+                    <Icon size={16} />
+                    <span className="hidden sm:inline">{tab.label}</span>
+                    <span className="sm:hidden">{tab.label.split(' ')[0]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </nav>
+      );
+    }
+
+    // Dashboard Component
+    function Dashboard({ benefits, tasks, accounts, setBenefits, setTasks, saveData }) {
+      const completedBenefits = benefits.filter(b => b.status === 'completed').length;
+      const pendingBenefits = benefits.filter(b => b.status === 'pending').length;
+      const completedTasks = tasks.filter(t => t.completed).length;
+      const urgentTasks = tasks.filter(t => !t.completed && t.priority === 'high').length;
+
+      return (
+        <div className="space-y-6 sm:space-y-8">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+            <StatCard label="Total Benefits" value={benefits.length} color="amber" />
+            <StatCard label="Completed" value={completedBenefits} color="emerald" />
+            <StatCard label="Pending" value={pendingBenefits} color="blue" />
+            <StatCard label="Urgent Tasks" value={urgentTasks} color="rose" />
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <RecentBenefits benefits={benefits} />
+            <TaskList tasks={tasks} setTasks={setTasks} saveData={saveData} />
+          </div>
+
+          <QuickActions />
+        </div>
+      );
+    }
+
+    // Stat Card Component
+    function StatCard({ label, value, color }) {
+      const colorClasses = {
+        amber: 'bg-gradient-to-br from-amber-500 to-orange-500',
+        emerald: 'bg-gradient-to-br from-emerald-500 to-teal-500',
+        blue: 'bg-gradient-to-br from-blue-500 to-indigo-500',
+        rose: 'bg-gradient-to-br from-rose-500 to-pink-500'
+      };
+
+      return (
+        <div className={`${colorClasses[color]} rounded-xl p-4 sm:p-6 text-white shadow-lg`}>
+          <div className="text-xs sm:text-sm font-medium opacity-90 mb-1">{label}</div>
+          <div className="text-2xl sm:text-4xl font-bold font-serif">{value}</div>
+        </div>
+      );
+    }
+
+    // Recent Benefits Component
+    function RecentBenefits({ benefits }) {
+      const recentBenefits = benefits.slice(0, 5);
+
+      return (
+        <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 border border-stone-200">
+          <h2 className="text-xl sm:text-2xl font-serif text-stone-800 mb-4">Recent Benefits</h2>
+          <div className="space-y-3">
+            {recentBenefits.length === 0 ? (
+              <p className="text-stone-500 italic text-sm">No benefits added yet</p>
+            ) : (
+              recentBenefits.map(benefit => (
+                <div key={benefit.id} className="flex items-center justify-between p-3 bg-stone-50 rounded-lg">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-stone-800 text-sm sm:text-base truncate">{benefit.institution}</div>
+                    <div className="text-xs sm:text-sm text-stone-600">{benefit.type}</div>
+                  </div>
+                  <StatusBadge status={benefit.status} />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Task List Component
+    function TaskList({ tasks, setTasks, saveData }) {
+      const [showCompleted, setShowCompleted] = useState(false);
+      const [newTask, setNewTask] = useState('');
+
+      const displayTasks = showCompleted ? tasks : tasks.filter(t => !t.completed);
+
+      const toggleTask = (id) => {
+        const updatedTasks = tasks.map(t => 
+          t.id === id ? { ...t, completed: !t.completed } : t
+        );
+        setTasks(updatedTasks);
+        saveData(null, null, updatedTasks);
+      };
+
+      const addTask = () => {
+        if (!newTask.trim()) return;
+        const task = {
+          id: Date.now(),
+          title: newTask,
+          completed: false,
+          priority: 'medium',
+          createdAt: new Date().toISOString()
+        };
+        const updatedTasks = [...tasks, task];
+        setTasks(updatedTasks);
+        saveData(null, null, updatedTasks);
+        setNewTask('');
+      };
+
+      return (
+        <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 border border-stone-200">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl sm:text-2xl font-serif text-stone-800">Tasks</h2>
+            <button
+              onClick={() => setShowCompleted(!showCompleted)}
+              className="text-xs sm:text-sm text-stone-600 hover:text-stone-800"
+            >
+              {showCompleted ? 'Hide' : 'Show'} Completed
+            </button>
+          </div>
+          
+          <div className="flex gap-2 mb-4">
+            <input
+              type="text"
+              value={newTask}
+              onChange={(e) => setNewTask(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && addTask()}
+              placeholder="Add a new task..."
+              className="flex-1 px-3 sm:px-4 py-2 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+            />
+            <button
+              onClick={addTask}
+              className="px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {displayTasks.length === 0 ? (
+              <p className="text-stone-500 italic text-sm">No tasks to display</p>
+            ) : (
+              displayTasks.map(task => (
+                <div
+                  key={task.id}
+                  className="flex items-center gap-3 p-3 bg-stone-50 rounded-lg hover:bg-stone-100 transition-colors"
+                >
+                  <button
+                    onClick={() => toggleTask(task.id)}
+                    className="text-amber-600 hover:text-amber-700 flex-shrink-0"
+                  >
+                    {task.completed ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+                  </button>
+                  <span className={`flex-1 text-sm sm:text-base ${task.completed ? 'line-through text-stone-400' : 'text-stone-800'}`}>
+                    {task.title}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Quick Actions Component
+    function QuickActions() {
+      return (
+        <div className="bg-gradient-to-r from-slate-700 to-slate-800 rounded-xl shadow-lg p-6 sm:p-8 text-white">
+          <h2 className="text-xl sm:text-2xl font-serif mb-4 sm:mb-6">Quick Actions</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+            <ActionButton icon={Plus} label="Add Death Benefit" />
+            <ActionButton icon={Upload} label="Import Accounts" />
+            <ActionButton icon={FileText} label="NC Estate Guide" />
+          </div>
+        </div>
+      );
+    }
+
+    function ActionButton({ icon: Icon, label }) {
+      return (
+        <button className="flex items-center gap-3 p-3 sm:p-4 bg-white/10 rounded-lg hover:bg-white/20 transition-all border border-white/20">
+          <Icon size={20} />
+          <span className="font-medium text-sm sm:text-base">{label}</span>
+        </button>
+      );
+    }
+
+    // Benefits Manager Component (continuing with all other components from the original...)
+    function BenefitsManager({ benefits, setBenefits, saveData, filterCategory, setFilterCategory, searchTerm, setSearchTerm }) {
+      const [showForm, setShowForm] = useState(false);
+      const [editingBenefit, setEditingBenefit] = useState(null);
+
+      const categories = ['all', 'social-security', 'pension', 'retirement', 'life-insurance', 'other'];
+
+      const filteredBenefits = benefits.filter(benefit => {
+        const matchesCategory = filterCategory === 'all' || benefit.type === filterCategory;
+        const matchesSearch = benefit.institution.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                             benefit.type.toLowerCase().includes(searchTerm.toLowerCase());
+        return matchesCategory && matchesSearch;
+      });
+
+      const addOrUpdateBenefit = (benefit) => {
+        let updatedBenefits;
+        if (editingBenefit) {
+          updatedBenefits = benefits.map(b => b.id === benefit.id ? benefit : b);
+        } else {
+          updatedBenefits = [...benefits, { ...benefit, id: Date.now(), createdAt: new Date().toISOString() }];
+        }
+        setBenefits(updatedBenefits);
+        saveData(updatedBenefits, null, null);
+        setShowForm(false);
+        setEditingBenefit(null);
+      };
+
+      const deleteBenefit = (id) => {
+        if (confirm('Are you sure you want to delete this benefit?')) {
+          const updatedBenefits = benefits.filter(b => b.id !== id);
+          setBenefits(updatedBenefits);
+          saveData(updatedBenefits, null, null);
+        }
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <h2 className="text-2xl sm:text-3xl font-serif text-stone-800">Death Benefits Tracking</h2>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors shadow-md text-sm sm:text-base"
+            >
+              <Plus size={18} />
+              <span>Add Benefit</span>
+            </button>
+          </div>
+
+          {showForm && (
+            <BenefitForm 
+              benefit={editingBenefit} 
+              onSave={addOrUpdateBenefit} 
+              onCancel={() => { setShowForm(false); setEditingBenefit(null); }}
+            />
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1">
+              <input
+                type="text"
+                placeholder="Search benefits..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full px-4 py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+            <select
+              value={filterCategory}
+              onChange={(e) => setFilterCategory(e.target.value)}
+              className="px-4 py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+            >
+              {categories.map(cat => (
+                <option key={cat} value={cat}>
+                  {cat === 'all' ? 'All Categories' : cat.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4">
+            {filteredBenefits.length === 0 ? (
+              <div className="bg-white rounded-xl shadow-md p-8 sm:p-12 text-center border border-stone-200">
+                <p className="text-stone-500 text-base sm:text-lg">No benefits found. Click "Add Benefit" to get started.</p>
+              </div>
+            ) : (
+              filteredBenefits.map(benefit => (
+                <BenefitCard 
+                  key={benefit.id} 
+                  benefit={benefit} 
+                  onEdit={() => { setEditingBenefit(benefit); setShowForm(true); }}
+                  onDelete={() => deleteBenefit(benefit.id)}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Benefit Card Component
+    function BenefitCard({ benefit, onEdit, onDelete }) {
+      const [expanded, setExpanded] = useState(false);
+
+      return (
+        <div className="bg-white rounded-xl shadow-md border border-stone-200 overflow-hidden hover:shadow-lg transition-shadow">
+          <div className="p-4 sm:p-6">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <h3 className="text-lg sm:text-xl font-serif text-stone-800 truncate">{benefit.institution}</h3>
+                  <CategoryBadge type={benefit.type} />
+                  <StatusBadge status={benefit.status} />
+                </div>
+                <div className="text-stone-600 space-y-1 text-sm">
+                  {benefit.accountNumber && (
+                    <p>Account: {benefit.accountNumber}</p>
+                  )}
+                  {benefit.estimatedAmount && (
+                    <p className="font-medium text-amber-700">
+                      Estimated: ${parseFloat(benefit.estimatedAmount).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="p-2 text-stone-600 hover:text-stone-800 hover:bg-stone-100 rounded-lg transition-colors"
+                >
+                  {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                </button>
+                <button
+                  onClick={onEdit}
+                  className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
+                >
+                  <Edit2 size={16} />
+                </button>
+                <button
+                  onClick={onDelete}
+                  className="p-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+
+            {expanded && (
+              <div className="mt-4 sm:mt-6 pt-4 sm:pt-6 border-t border-stone-200 space-y-4">
+                {benefit.contactName && (
+                  <div className="flex items-center gap-2 text-stone-700 text-sm">
+                    <Phone size={14} />
+                    <span>{benefit.contactName}: {benefit.contactPhone}</span>
+                  </div>
+                )}
+                {benefit.contactEmail && (
+                  <div className="flex items-center gap-2 text-stone-700 text-sm break-all">
+                    <Mail size={14} />
+                    <span>{benefit.contactEmail}</span>
+                  </div>
+                )}
+                {benefit.deadline && (
+                  <div className="flex items-center gap-2 text-stone-700 text-sm">
+                    <Calendar size={14} />
+                    <span>Deadline: {new Date(benefit.deadline).toLocaleDateString()}</span>
+                  </div>
+                )}
+                {benefit.notes && (
+                  <div className="bg-stone-50 p-4 rounded-lg">
+                    <p className="text-sm text-stone-700 whitespace-pre-wrap">{benefit.notes}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Benefit Form Component
+    function BenefitForm({ benefit, onSave, onCancel }) {
+      const [formData, setFormData] = useState(benefit || {
+        type: 'social-security',
+        institution: '',
+        accountNumber: '',
+        contactName: '',
+        contactPhone: '',
+        contactEmail: '',
+        estimatedAmount: '',
+        status: 'pending',
+        deadline: '',
+        notes: ''
+      });
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        onSave(formData);
+      };
+
+      return (
+        <div className="bg-white rounded-xl shadow-lg border-2 border-amber-200 p-4 sm:p-8">
+          <h3 className="text-xl sm:text-2xl font-serif text-stone-800 mb-4 sm:mb-6">
+            {benefit ? 'Edit Benefit' : 'Add New Benefit'}
+          </h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Category</label>
+                <select
+                  value={formData.type}
+                  onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  required
+                >
+                  <option value="social-security">Social Security</option>
+                  <option value="pension">Pension</option>
+                  <option value="retirement">Retirement Account</option>
+                  <option value="life-insurance">Life Insurance</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Institution Name</label>
+                <input
+                  type="text"
+                  value={formData.institution}
+                  onChange={(e) => setFormData({ ...formData, institution: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Account Number</label>
+                <input
+                  type="text"
+                  value={formData.accountNumber}
+                  onChange={(e) => setFormData({ ...formData, accountNumber: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Estimated Amount</label>
+                <input
+                  type="number"
+                  value={formData.estimatedAmount}
+                  onChange={(e) => setFormData({ ...formData, estimatedAmount: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Status</label>
+                <select
+                  value={formData.status}
+                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="in-progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                  <option value="on-hold">On Hold</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Deadline</label>
+                <input
+                  type="date"
+                  value={formData.deadline}
+                  onChange={(e) => setFormData({ ...formData, deadline: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Contact Name</label>
+                <input
+                  type="text"
+                  value={formData.contactName}
+                  onChange={(e) => setFormData({ ...formData, contactName: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Contact Phone</label>
+                <input
+                  type="tel"
+                  value={formData.contactPhone}
+                  onChange={(e) => setFormData({ ...formData, contactPhone: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-stone-700 mb-2">Contact Email</label>
+              <input
+                type="email"
+                value={formData.contactEmail}
+                onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })}
+                className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-stone-700 mb-2">Notes</label>
+              <textarea
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                rows="4"
+                className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                placeholder="Add any additional notes or details..."
+              />
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3 pt-4">
+              <button
+                type="submit"
+                className="flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors text-sm sm:text-base"
+              >
+                <Save size={18} />
+                <span>Save Benefit</span>
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="px-4 sm:px-6 py-2 sm:py-3 bg-stone-200 text-stone-700 rounded-lg hover:bg-stone-300 transition-colors text-sm sm:text-base"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    // Accounts Manager Component
+    function AccountsManager({ accounts, setAccounts, saveData, searchTerm, setSearchTerm }) {
+      const [showForm, setShowForm] = useState(false);
+      const [editingAccount, setEditingAccount] = useState(null);
+      const [filterRelevant, setFilterRelevant] = useState(false);
+
+      const filteredAccounts = accounts.filter(account => {
+        const matchesSearch = account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                             account.url.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                             (account.username && account.username.toLowerCase().includes(searchTerm.toLowerCase()));
+        const matchesFilter = !filterRelevant || account.isEstateRelevant;
+        return matchesSearch && matchesFilter;
+      });
+
+      const addOrUpdateAccount = (account) => {
+        let updatedAccounts;
+        if (editingAccount) {
+          updatedAccounts = accounts.map(a => a.id === account.id ? account : a);
+        } else {
+          updatedAccounts = [...accounts, { ...account, id: Date.now() }];
+        }
+        setAccounts(updatedAccounts);
+        saveData(null, updatedAccounts, null);
+        setShowForm(false);
+        setEditingAccount(null);
+      };
+
+      const deleteAccount = (id) => {
+        if (confirm('Are you sure you want to delete this account?')) {
+          const updatedAccounts = accounts.filter(a => a.id !== id);
+          setAccounts(updatedAccounts);
+          saveData(null, updatedAccounts, null);
+        }
+      };
+
+      const toggleRelevance = (id) => {
+        const updatedAccounts = accounts.map(a => 
+          a.id === id ? { ...a, isEstateRelevant: !a.isEstateRelevant } : a
+        );
+        setAccounts(updatedAccounts);
+        saveData(null, updatedAccounts, null);
+      };
+
+      const relevantCount = accounts.filter(a => a.isEstateRelevant).length;
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h2 className="text-2xl sm:text-3xl font-serif text-stone-800">Account Management</h2>
+              <p className="text-sm sm:text-base text-stone-600 mt-1">{relevantCount} estate-relevant accounts</p>
+            </div>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors shadow-md text-sm sm:text-base"
+            >
+              <Plus size={18} />
+              <span>Add Account</span>
+            </button>
+          </div>
+
+          {showForm && (
+            <AccountForm 
+              account={editingAccount} 
+              onSave={addOrUpdateAccount} 
+              onCancel={() => { setShowForm(false); setEditingAccount(null); }}
+            />
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1">
+              <input
+                type="text"
+                placeholder="Search accounts..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full px-4 py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+            <button
+              onClick={() => setFilterRelevant(!filterRelevant)}
+              className={`px-4 sm:px-6 py-3 text-sm sm:text-base rounded-lg border-2 transition-all ${
+                filterRelevant
+                  ? 'bg-amber-600 text-white border-amber-600'
+                  : 'bg-white text-stone-700 border-stone-300 hover:border-amber-400'
+              }`}
+            >
+              {filterRelevant ? 'Estate-Relevant Only' : 'Show All'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3">
+            {filteredAccounts.length === 0 ? (
+              <div className="bg-white rounded-xl shadow-md p-8 sm:p-12 text-center border border-stone-200">
+                <p className="text-stone-500 text-base sm:text-lg">No accounts found. Import from password manager or add manually.</p>
+              </div>
+            ) : (
+              filteredAccounts.map(account => (
+                <AccountCard 
+                  key={account.id} 
+                  account={account} 
+                  onEdit={() => { setEditingAccount(account); setShowForm(true); }}
+                  onDelete={() => deleteAccount(account.id)}
+                  onToggleRelevance={() => toggleRelevance(account.id)}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Account Card Component
+    function AccountCard({ account, onEdit, onDelete, onToggleRelevance }) {
+      return (
+        <div className={`bg-white rounded-lg shadow-md border-l-4 p-3 sm:p-4 hover:shadow-lg transition-all ${
+          account.isEstateRelevant ? 'border-amber-500' : 'border-stone-300'
+        }`}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <h3 className="font-medium text-stone-800 text-sm sm:text-base truncate">{account.name}</h3>
+                {account.isEstateRelevant && (
+                  <span className="px-2 py-1 bg-amber-100 text-amber-800 text-xs font-medium rounded">
+                    Estate Relevant
+                  </span>
+                )}
+              </div>
+              <div className="text-xs sm:text-sm text-stone-600 space-y-1">
+                <p className="truncate">{account.url}</p>
+                {account.username && <p className="truncate">Username: {account.username}</p>}
+                {account.category && <p className="text-xs text-stone-500">Category: {account.category}</p>}
+              </div>
+            </div>
+            <div className="flex gap-1 sm:gap-2 flex-shrink-0">
+              <button
+                onClick={onToggleRelevance}
+                className={`p-2 rounded-lg transition-colors ${
+                  account.isEstateRelevant
+                    ? 'text-amber-600 hover:text-amber-800 hover:bg-amber-50'
+                    : 'text-stone-400 hover:text-stone-600 hover:bg-stone-100'
+                }`}
+                title={account.isEstateRelevant ? 'Mark as not estate-relevant' : 'Mark as estate-relevant'}
+              >
+                <CheckCircle2 size={18} />
+              </button>
+              <button
+                onClick={onEdit}
+                className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
+              >
+                <Edit2 size={16} />
+              </button>
+              <button
+                onClick={onDelete}
+                className="p-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Account Form Component
+    function AccountForm({ account, onSave, onCancel }) {
+      const [formData, setFormData] = useState(account || {
+        name: '',
+        url: '',
+        username: '',
+        category: '',
+        isEstateRelevant: false,
+        notes: ''
+      });
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        onSave(formData);
+      };
+
+      return (
+        <div className="bg-white rounded-xl shadow-lg border-2 border-amber-200 p-4 sm:p-8">
+          <h3 className="text-xl sm:text-2xl font-serif text-stone-800 mb-4 sm:mb-6">
+            {account ? 'Edit Account' : 'Add New Account'}
+          </h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Account Name</label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">URL</label>
+                <input
+                  type="url"
+                  value={formData.url}
+                  onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Username</label>
+                <input
+                  type="text"
+                  value={formData.username}
+                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Category</label>
+                <input
+                  type="text"
+                  value={formData.category}
+                  onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                  className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="e.g., Banking, Insurance, Utilities"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.isEstateRelevant}
+                  onChange={(e) => setFormData({ ...formData, isEstateRelevant: e.target.checked })}
+                  className="w-5 h-5 text-amber-600 border-stone-300 rounded focus:ring-amber-500"
+                />
+                <span className="text-sm font-medium text-stone-700">Mark as estate-relevant</span>
+              </label>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-stone-700 mb-2">Notes</label>
+              <textarea
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                rows="3"
+                className="w-full px-3 sm:px-4 py-2 sm:py-3 text-sm sm:text-base border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3 pt-4">
+              <button
+                type="submit"
+                className="flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors text-sm sm:text-base"
+              >
+                <Save size={18} />
+                <span>Save Account</span>
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="px-4 sm:px-6 py-2 sm:py-3 bg-stone-200 text-stone-700 rounded-lg hover:bg-stone-300 transition-colors text-sm sm:text-base"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    // Import Manager Component
+    function ImportManager({ accounts, setAccounts, saveData }) {
+      const [importing, setImporting] = useState(false);
+      const [importResults, setImportResults] = useState(null);
+
+      const handleFileUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setImporting(true);
+        const reader = new FileReader();
+
+        reader.onload = (event) => {
+          try {
+            const csvData = event.target.result;
+            const parsed = parseGooglePasswordCSV(csvData);
+            
+            const newAccounts = parsed.map(item => ({
+              id: Date.now() + Math.random(),
+              name: item.name,
+              url: item.url,
+              username: item.username,
+              category: categorizeAccount(item.url, item.name),
+              isEstateRelevant: isLikelyEstateRelevant(item.url, item.name),
+              notes: '',
+              source: 'imported'
+            }));
+
+            const updatedAccounts = [...accounts, ...newAccounts];
+            setAccounts(updatedAccounts);
+            saveData(null, updatedAccounts, null);
+
+            setImportResults({
+              total: parsed.length,
+              estateRelevant: newAccounts.filter(a => a.isEstateRelevant).length
+            });
+            setImporting(false);
+          } catch (error) {
+            console.error('Import error:', error);
+            alert('Error parsing CSV file. Please ensure it\'s a valid Google Password Manager export.');
+            setImporting(false);
+          }
+        };
+
+        reader.readAsText(file);
+      };
+
+      const parseGooglePasswordCSV = (csvText) => {
+        const lines = csvText.split('\n');
+        const results = [];
+        
+        for (let i = 1; i < lines.length; i++) {
+          if (!lines[i].trim()) continue;
+          
+          const values = parseCSVLine(lines[i]);
+          if (values.length >= 3) {
+            results.push({
+              name: values[0] || 'Unknown',
+              url: values[1] || '',
+              username: values[2] || ''
+            });
+          }
+        }
+        
+        return results;
+      };
+
+      const parseCSVLine = (line) => {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            result.push(current);
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        result.push(current);
+        
+        return result;
+      };
+
+      const categorizeAccount = (url, name) => {
+        const urlLower = url.toLowerCase();
+        const nameLower = name.toLowerCase();
+        
+        if (urlLower.includes('bank') || nameLower.includes('bank')) return 'Banking';
+        if (urlLower.includes('insurance') || nameLower.includes('insurance')) return 'Insurance';
+        if (urlLower.includes('social') || nameLower.includes('social security')) return 'Government';
+        if (urlLower.includes('401k') || urlLower.includes('retirement') || urlLower.includes('fidelity') || 
+            urlLower.includes('vanguard') || urlLower.includes('schwab')) return 'Retirement';
+        if (urlLower.includes('utility') || urlLower.includes('electric') || urlLower.includes('water') ||
+            urlLower.includes('gas') || urlLower.includes('power')) return 'Utilities';
+        if (urlLower.includes('credit') || nameLower.includes('credit card')) return 'Credit';
+        if (urlLower.includes('health') || urlLower.includes('medical')) return 'Healthcare';
+        
+        return 'Other';
+      };
+
+      const isLikelyEstateRelevant = (url, name) => {
+        const estateKeywords = [
+          'bank', 'insurance', 'social', 'retirement', '401k', 'ira', 'pension',
+          'fidelity', 'vanguard', 'schwab', 'credit', 'loan', 'mortgage',
+          'utility', 'electric', 'water', 'gas', 'healthcare', 'medical',
+          'investment', 'brokerage', 'annuity'
+        ];
+        
+        const searchText = (url + ' ' + name).toLowerCase();
+        return estateKeywords.some(keyword => searchText.includes(keyword));
+      };
+
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-serif text-stone-800 mb-2">Import Password Manager Data</h2>
+            <p className="text-sm sm:text-base text-stone-600">Import accounts from Google Password Manager CSV exports</p>
+          </div>
+
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4 sm:p-6 rounded-lg">
+            <h3 className="font-medium text-blue-900 mb-2 text-sm sm:text-base">How to export from Google Password Manager:</h3>
+            <ol className="list-decimal list-inside space-y-2 text-blue-800 text-xs sm:text-sm">
+              <li>Go to passwords.google.com</li>
+              <li>Click the settings gear icon (⚙️)</li>
+              <li>Select "Export passwords"</li>
+              <li>Authenticate and download the CSV file</li>
+              <li>Repeat for each Google account</li>
+              <li>Upload each CSV file below</li>
+            </ol>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-lg border-2 border-dashed border-stone-300 p-8 sm:p-12 text-center">
+            <Upload className="mx-auto mb-4 text-stone-400" size={40} />
+            <h3 className="text-lg sm:text-xl font-serif text-stone-800 mb-2">Upload CSV File</h3>
+            <p className="text-sm sm:text-base text-stone-600 mb-6">Google Password Manager export format</p>
+            <label className="inline-block">
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleFileUpload}
+                className="hidden"
+                disabled={importing}
+              />
+              <span className="px-6 sm:px-8 py-3 sm:py-4 text-sm sm:text-base bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors cursor-pointer inline-block">
+                {importing ? 'Importing...' : 'Choose CSV File'}
+              </span>
+            </label>
+          </div>
+
+          {importResults && (
+            <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 sm:p-6 rounded-lg">
+              <h3 className="font-medium text-emerald-900 mb-2 text-sm sm:text-base">Import Successful!</h3>
+              <p className="text-sm sm:text-base text-emerald-800">
+                Imported {importResults.total} accounts, {importResults.estateRelevant} automatically marked as estate-relevant.
+              </p>
+              <p className="text-xs sm:text-sm text-emerald-700 mt-2">
+                Review the Accounts tab to verify and adjust estate-relevant markings.
+              </p>
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 border border-stone-200">
+            <h3 className="text-lg sm:text-xl font-serif text-stone-800 mb-4">Auto-Detection Categories</h3>
+            <p className="text-sm sm:text-base text-stone-600 mb-4">
+              The system automatically identifies estate-relevant accounts based on these categories:
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+              {['Banking', 'Insurance', 'Retirement', 'Government', 'Healthcare', 'Utilities', 'Credit', 'Investments'].map(cat => (
+                <div key={cat} className="px-3 sm:px-4 py-2 bg-amber-50 text-amber-800 rounded-lg text-center text-xs sm:text-sm font-medium">
+                  {cat}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // NC Guidance Component
+    function NCGuidance() {
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-serif text-stone-800 mb-2">North Carolina Estate Guidelines</h2>
+            <p className="text-sm sm:text-base text-stone-600">State-specific information for handling estate matters</p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+            <GuidanceCard
+              title="Death Certificate"
+              icon={FileText}
+              items={[
+                'Obtain multiple certified copies (10-15 recommended)',
+                'Available from NC Vital Records or funeral home',
+                'Required for most benefit claims',
+                'Processing time: 7-10 business days'
+              ]}
+            />
+
+            <GuidanceCard
+              title="Probate Process"
+              icon={AlertCircle}
+              items={[
+                'Small estates (under $20,000 or $30,000 if surviving spouse): Affidavit of Collection',
+                'Larger estates: Formal probate through Clerk of Superior Court',
+                'File in county where deceased resided',
+                'Executor appointment typically takes 2-4 weeks'
+              ]}
+            />
+
+            <GuidanceCard
+              title="Social Security"
+              icon={Phone}
+              items={[
+                'Report death to SSA: 1-800-772-1213',
+                'Cannot do online - must call',
+                'Survivor benefits may be available',
+                'Return final month\'s payment if received'
+              ]}
+            />
+
+            <GuidanceCard
+              title="Important Deadlines"
+              icon={Calendar}
+              items={[
+                'Probate filing: No specific deadline, but sooner is better',
+                'Life insurance claims: Typically 1-2 years',
+                'Retirement account distributions: December 31 of year after death',
+                'Estate tax return (if required): 9 months from date of death'
+              ]}
+            />
+
+            <GuidanceCard
+              title="NC-Specific Benefits"
+              icon={CheckCircle2}
+              items={[
+                'NC State Retirement System: 1-877-627-3287',
+                'NC Teachers\' and State Employees\' Retirement: Contact TSERS',
+                'Local government pensions: Contact specific municipality',
+                'NC Medicaid estate recovery may apply'
+              ]}
+            />
+
+            <GuidanceCard
+              title="Key Contacts"
+              icon={Mail}
+              items={[
+                'NC Vital Records: 919-733-3000',
+                'County Register of Deeds: Local courthouse',
+                'NC Department of Revenue: 1-877-252-3052',
+                'Social Security Administration: 1-800-772-1213'
+              ]}
+            />
+          </div>
+
+          <div className="bg-amber-50 border-l-4 border-amber-500 p-4 sm:p-6 rounded-lg">
+            <h3 className="font-medium text-amber-900 mb-2 text-sm sm:text-base">Important Note</h3>
+            <p className="text-amber-800 text-xs sm:text-sm">
+              This information is for general guidance only. Estate laws can be complex and vary by situation. 
+              Consider consulting with a North Carolina estate attorney for personalized advice, especially for 
+              larger or complex estates.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // Guidance Card Component
+    function GuidanceCard({ title, icon: Icon, items }) {
+      return (
+        <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 border border-stone-200">
+          <div className="flex items-center gap-3 mb-4">
+            <Icon className="text-amber-600" size={20} />
+            <h3 className="text-lg sm:text-xl font-serif text-stone-800">{title}</h3>
+          </div>
+          <ul className="space-y-2">
+            {items.map((item, idx) => (
+              <li key={idx} className="flex items-start gap-2 text-stone-700 text-xs sm:text-sm">
+                <span className="text-amber-600 mt-1">•</span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    }
+
+    // Utility Badge Components
+    function StatusBadge({ status }) {
+      const styles = {
+        pending: 'bg-blue-100 text-blue-800',
+        'in-progress': 'bg-amber-100 text-amber-800',
+        completed: 'bg-emerald-100 text-emerald-800',
+        'on-hold': 'bg-stone-100 text-stone-800'
+      };
+
+      return (
+        <span className={`px-2 sm:px-3 py-1 rounded-full text-xs font-medium ${styles[status]} whitespace-nowrap`}>
+          {status.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+        </span>
+      );
+    }
+
+    function CategoryBadge({ type }) {
+      const styles = {
+        'social-security': 'bg-indigo-100 text-indigo-800',
+        'pension': 'bg-purple-100 text-purple-800',
+        'retirement': 'bg-cyan-100 text-cyan-800',
+        'life-insurance': 'bg-rose-100 text-rose-800',
+        'other': 'bg-stone-100 text-stone-800'
+      };
+
+      return (
+        <span className={`px-2 py-1 rounded text-xs font-medium ${styles[type]} whitespace-nowrap`}>
+          {type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+        </span>
+      );
+    }
+
+    // Render the app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<EstateManager />);
+  </script>
+</body>
+</html>
