@@ -30,7 +30,6 @@ jobs:
           # Content Creators database ID — used to resolve channel → creator relation
           CONTENT_CREATORS_DATABASE_ID: ${{ secrets.CONTENT_CREATORS_DATABASE_ID }}
           NOTION_VERSION: "2022-06-28"
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           CHANNEL_CONFIG: channels.json
           LOOKBACK_DAYS: "2"
         run: python Auto-Blogger.py
