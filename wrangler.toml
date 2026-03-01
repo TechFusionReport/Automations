@@ -1,0 +1,39 @@
+name = "techfusion-agents"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "CONTENT_KV"
+id = "217f548642464439afa2b966a585e486"
+
+[[kv_namespaces]]
+binding = "AGENT_STATE"
+id = "4f99c86f158e4d3cbd1798e453117759"
+
+[[kv_namespaces]]
+binding = "ANALYTICS"
+id = "436e3d18ff4a4ac8bdddfd8271b2f2c9"
+
+[[queues.producers]]
+queue = "enhancement-queue"
+binding = "ENHANCEMENT_QUEUE"
+
+[[queues.consumers]]
+queue = "enhancement-queue"
+max_batch_size = 1
+max_batch_timeout = 30
+
+[[queues.producers]]
+queue = "publishing-queue"
+binding = "PUBLISHING_QUEUE"
+
+[[queues.consumers]]
+queue = "publishing-queue"
+max_batch_size = 1
+max_batch_timeout = 30
+
+[vars]
+NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
+
+[triggers]
+crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *"]
