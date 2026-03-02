@@ -1,57 +1,83 @@
-export class Router {
-  constructor() {
-    this.routes = new Map();
-  }
-  
-  get(path, handler) {
-    this.routes.set(`GET:${path}`, handler);
-  }
-  
-  post(path, handler) {
-    this.routes.set(`POST:${path}`, handler);
-  }
-  
-  matchPath(routePath, actualPath) {
-    const routeParts = routePath.split('/');
-    const actualParts = actualPath.split('/');
+export default {
+  async fetch(request, env, ctx) {
+    const router = new Router();
     
-    if (routeParts.length !== actualParts.length) return null;
+    // DISCOVERY
+    router.post('/discover', async (req, env) => {
+      const agent = new DiscoveryAgent(env);
+      return await agent.run();
+    });
     
-    const params = {};
-    for (let i = 0; i < routeParts.length; i++) {
-      if (routeParts[i].startsWith(':')) {
-        params[routeParts[i].slice(1)] = actualParts[i];
-      } else if (routeParts[i] !== actualParts[i]) {
-        return null;
+    // CHANNEL MANAGEMENT
+    router.get('/admin/channels', async (req, env) => {
+      const channels = await env.CONTENT_KV.get('channels_config');
+      return new Response(channels || '[]', {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    router.post('/admin/channels', async (req, env) => {
+      const channels = await req.json();
+      if (!Array.isArray(channels)) {
+        return new Response('Invalid: must be array', { status: 400 });
       }
-    }
+      await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+      return new Response(JSON.stringify({ 
+        status: 'saved', 
+        count: channels.length 
+      }), { headers: { 'Content-Type': 'application/json' }});
+    });
     
-    return params;
-  }
-  
-  async handle(request, env) {
-    const url = new URL(request.url);
-    const method = request.method;
-    const path = url.pathname;
+    router.post('/admin/channels/refresh', async (req, env) => {
+      try {
+        const response = await fetch('https://raw.githubusercontent.com/YOUR_USERNAME/Automations/main/config/channels.json');
+        const channels = await response.json();
+        await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+        return new Response(JSON.stringify({ 
+          status: 'refreshed', 
+          count: channels.length 
+        }), { headers: { 'Content-Type': 'application/json' }});
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    });
     
-    // Try exact match first
-    const exactKey = `${method}:${path}`;
-    if (this.routes.has(exactKey)) {
-      return await this.routes.get(exactKey)(request, env);
-    }
+    // ENHANCEMENT
+    router.post('/enhance', async (req, env) => {
+      const data = await req.json();
+      const agent = new EnhancementAgent(env);
+      return await agent.start(data);
+    });
     
-    // Try pattern match
-    for (const [key, handler] of this.routes) {
-      const [routeMethod, routePath] = key.split(':');
-      if (routeMethod !== method) continue;
+    // PUBLISHING
+    router.post('/publish', async (req, env) => {
+      const data = await req.json();
+      const agent = new PublishingAgent(env);
+      return await agent.publish(data);
+    });
+    
+    // STATUS
+    router.get('/status', async (req, env) => {
+      const lastDiscovery = await env.CONTENT_KV.get('last_discovery');
+      const channels = await env.CONTENT_KV.get('channels_config');
+      const creators = await env.CONTENT_KV.get('creator_cache');
       
-      const params = this.matchPath(routePath, path);
-      if (params) {
-        request.params = params;
-        return await handler(request, env);
-      }
-    }
+      return new Response(JSON.stringify({
+        status: 'running',
+        channels: channels ? JSON.parse(channels).length : 0,
+        creators: creators ? JSON.parse(creators).length : 0,
+        lastDiscovery: lastDiscovery ? JSON.parse(lastDiscovery) : null,
+        timestamp: new Date().toISOString()
+      }), { headers: { 'Content-Type': 'application/json' }});
+    });
     
-    return new Response('Not Found', { status: 404 });
+    return router.handle(request, env);
+  },
+  
+  async scheduled(event, env, ctx) {
+    if (event.cron === '0 */6 * * *') {
+      const agent = new DiscoveryAgent(env);
+      await agent.run();
+    }
   }
-}
+};
