@@ -1,0 +1,472 @@
+[
+  {
+    "id": "UCuVLXPqY4LZx3VgiXPmxkaQ",
+    "name": "MrAndroidFHD",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "smartphones", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UC_RovKmk0OCbuZjA8f08opw",
+    "name": "Futurepedia",
+    "minScore": 75,
+    "category": "AI Tools",
+    "section": "technology",
+    "tags": ["ai", "tools", "automation"],
+    "featured": true
+  },
+  {
+    "id": "UCb2h-vtXFd5I-g8TFyOTXRA",
+    "name": "ArtOfKickz",
+    "minScore": 65,
+    "category": "Lifestyle",
+    "section": "entertainment",
+    "tags": ["sneakers", "lifestyle", "culture"],
+    "featured": false
+  },
+  {
+    "id": "UCaP1PNnr055fOt89JPry51w",
+    "name": "Justin Tsen",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "samsung", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UC2gyzKcHbYfqoXA5xbyGXtQ",
+    "name": "The Hook Up",
+    "minScore": 75,
+    "category": "Smart Home",
+    "section": "technology",
+    "tags": ["smart home", "automation", "home assistant"],
+    "featured": true
+  },
+  {
+    "id": "UCvpfclapgcuJo0M_x65pfRw",
+    "name": "BeeBom",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "apps", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UCnvqF2-dOB9qo9EPDHRX9mg",
+    "name": "Reed's Smart Home",
+    "minScore": 75,
+    "category": "Smart Home",
+    "section": "technology",
+    "tags": ["smart home", "automation", "reviews"],
+    "featured": true
+  },
+  {
+    "id": "UCllfWlBHBvMmkiz15S8bCqw",
+    "name": "Taylor Tech",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "samsung", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UC-kFCSJLpxuJdgMnQz8Dvrg",
+    "name": "Android Central",
+    "minScore": 75,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "smartphones", "news"],
+    "featured": true
+  },
+  {
+    "id": "UCSuHzQ3GrHSzoBbwrIq3LLA",
+    "name": "Naomi Brockwell",
+    "minScore": 70,
+    "category": "Privacy & Security",
+    "section": "technology",
+    "tags": ["privacy", "security", "tech"],
+    "featured": false
+  },
+  {
+    "id": "UC_Mv2BsvWR03-s7S5CrNm3w",
+    "name": "Flipped Classroom Tutorials",
+    "minScore": 65,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["tutorials", "education", "productivity"],
+    "featured": false
+  },
+  {
+    "id": "UCBJycsmduvYEL83R_U4JriQ",
+    "name": "Marques Brownlee",
+    "minScore": 80,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "smartphones", "gadgets"],
+    "featured": true
+  },
+  {
+    "id": "UC4MZ7zUHb5eAxU75Dc_nqdQ",
+    "name": "Tiff In Tech",
+    "minScore": 70,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "gadgets"],
+    "featured": false
+  },
+  {
+    "id": "UC8p19gUXJYTsUPEpusHgteQ",
+    "name": "Learn Google Sheets & Excel Spreadsheets",
+    "minScore": 65,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["google sheets", "excel", "productivity"],
+    "featured": false
+  },
+  {
+    "id": "UCaSM4GqhbaVmRT7fmmFmR1w",
+    "name": "BrettInTech",
+    "minScore": 70,
+    "category": "Smart Home",
+    "section": "technology",
+    "tags": ["smart home", "automation", "tech"],
+    "featured": false
+  },
+  {
+    "id": "UCYyaQsm2HyneP9CsIOdihBw",
+    "name": "ToolFinder",
+    "minScore": 70,
+    "category": "AI Tools",
+    "section": "technology",
+    "tags": ["ai", "tools", "productivity"],
+    "featured": false
+  },
+  {
+    "id": "UC9LFVFomQEpHyApyhlJoJIg",
+    "name": "AppX",
+    "minScore": 65,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["apps", "android", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UCGfluwZUeQNG5HvHuKfSKgw",
+    "name": "Mobiscrub",
+    "minScore": 65,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "tips", "tutorials"],
+    "featured": false
+  },
+  {
+    "id": "UCKlOmM_eB0nzTNiDFZibSSA",
+    "name": "SakiTech",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["samsung", "android", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UC_1awbvccFZOnVRjAIkCG7Q",
+    "name": "Sam Beckman",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "samsung", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UC-bIwzgXdR4mThJfRQNkyCw",
+    "name": "TechDoc",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "tips", "tutorials"],
+    "featured": false
+  },
+  {
+    "id": "UC-2EdaIT69qmIB4fLppdG0Q",
+    "name": "TechnoLingus",
+    "minScore": 65,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "gadgets"],
+    "featured": false
+  },
+  {
+    "id": "UCBj7lf9bAmctuhsnZ3oxqsg",
+    "name": "LayedBackDFR",
+    "minScore": 65,
+    "category": "Lifestyle",
+    "section": "entertainment",
+    "tags": ["lifestyle", "culture", "entertainment"],
+    "featured": false
+  },
+  {
+    "id": "UCRy28FvxDXt9FfHIuqgvPBg",
+    "name": "AleeasPreciousLife",
+    "minScore": 65,
+    "category": "Lifestyle",
+    "section": "entertainment",
+    "tags": ["lifestyle", "vlogs", "entertainment"],
+    "featured": false
+  },
+  {
+    "id": "UCWsjjgyHya6TDKpZIHW3BrA",
+    "name": "XtreamDroid",
+    "minScore": 65,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "tips", "tutorials"],
+    "featured": false
+  },
+  {
+    "id": "UCGhkRoks9q0Ms7cxpu5gtww",
+    "name": "UniqueTutorials",
+    "minScore": 65,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "tutorials", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UCO_vmeInQm5Z6dEZ6R5Kk0A",
+    "name": "PocketNow",
+    "minScore": 75,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["smartphones", "reviews", "news"],
+    "featured": true
+  },
+  {
+    "id": "UCMiJRAwDNSNzuYeN2uWa0pA",
+    "name": "Mrwhosetheboss",
+    "minScore": 80,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["smartphones", "reviews", "gadgets"],
+    "featured": true
+  },
+  {
+    "id": "UCwBV-eg1dAkzrdjqJfyEj0w",
+    "name": "MovieGasm",
+    "minScore": 70,
+    "category": "Movies",
+    "section": "entertainment",
+    "tags": ["movies", "trailers", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCenU8Lc_KuRTyJzs0t1Tteg",
+    "name": "JimmyIsPromo",
+    "minScore": 65,
+    "category": "Entertainment",
+    "section": "entertainment",
+    "tags": ["entertainment", "lifestyle", "culture"],
+    "featured": false
+  },
+  {
+    "id": "UCa76wbWueiRaHL858mXkvuw",
+    "name": "Alex Leischow",
+    "minScore": 70,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["productivity", "notion", "workflows"],
+    "featured": false
+  },
+  {
+    "id": "UCxb2ktvayRwCIN9kBKgxUiQ",
+    "name": "FireTVSticks",
+    "minScore": 70,
+    "category": "Streaming",
+    "section": "entertainment",
+    "tags": ["firetv", "streaming", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UCTs3VX60I6EKrrwdkgrwCGQ",
+    "name": "Aurelius Tjin",
+    "minScore": 70,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["productivity", "design", "tools"],
+    "featured": false
+  },
+  {
+    "id": "UC2iUwfYi_1FCGGqhOUNx-iA",
+    "name": "Screen Rant",
+    "minScore": 70,
+    "category": "Movies",
+    "section": "entertainment",
+    "tags": ["movies", "tv shows", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCO2x-p9gg9TLKneXlibGR7w",
+    "name": "Snazzy Labs",
+    "minScore": 75,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["apple", "tech", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCjgpFI5dU-D1-kh9H1muoxQ",
+    "name": "Hacksmith Industries",
+    "minScore": 70,
+    "category": "Tech & Science",
+    "section": "technology",
+    "tags": ["engineering", "science", "tech"],
+    "featured": false
+  },
+  {
+    "id": "UCcdoCX9WJZZrhXHmpvhgc7A",
+    "name": "Mark Spurrell",
+    "minScore": 65,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["productivity", "notion", "workflows"],
+    "featured": false
+  },
+  {
+    "id": "UCQEuTSzPFeN84a0JhhF-QFQ",
+    "name": "The TechVenger",
+    "minScore": 70,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "gadgets"],
+    "featured": false
+  },
+  {
+    "id": "UCsCex8aMDs2b39TS_49Mpcg",
+    "name": "Jonathan Casey",
+    "minScore": 70,
+    "category": "Smartphones",
+    "section": "technology",
+    "tags": ["android", "samsung", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCCSwbTR-seWT2cn9nVMp2Fw",
+    "name": "HowToAI",
+    "minScore": 75,
+    "category": "AI Tools",
+    "section": "technology",
+    "tags": ["ai", "tools", "tutorials"],
+    "featured": true
+  },
+  {
+    "id": "UCJabiIk1qnY_4oCbEmeOdxA",
+    "name": "The AI Spotlight",
+    "minScore": 75,
+    "category": "AI Tools",
+    "section": "technology",
+    "tags": ["ai", "tools", "news"],
+    "featured": true
+  },
+  {
+    "id": "UC9x0AN7BWHpCDHSm9NiJFJQ",
+    "name": "NetworkChuck",
+    "minScore": 75,
+    "category": "Coding",
+    "section": "technology",
+    "tags": ["networking", "coding", "cybersecurity"],
+    "featured": true
+  },
+  {
+    "id": "UCUnPu9bBZGPjiPUN6IoA2LQ",
+    "name": "Chris Majestic",
+    "minScore": 70,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["productivity", "ai", "workflows"],
+    "featured": false
+  },
+  {
+    "id": "UCzcRQ3vRNr6fJ1A9rqFn7QA",
+    "name": "ONE Media",
+    "minScore": 70,
+    "category": "Movies",
+    "section": "entertainment",
+    "tags": ["movies", "trailers", "entertainment"],
+    "featured": false
+  },
+  {
+    "id": "UCQSpnDG3YsFNf5-qHocF-WQ",
+    "name": "ThioJoe",
+    "minScore": 70,
+    "category": "Tech Tips",
+    "section": "technology",
+    "tags": ["tech", "tips", "tutorials"],
+    "featured": false
+  },
+  {
+    "id": "UCIfBYTbPSg_Pj1i5V8WyBxg",
+    "name": "TechnicallyAlex",
+    "minScore": 70,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "gadgets"],
+    "featured": false
+  },
+  {
+    "id": "UCqjVP9gAanUGFgTA5BRDvyA",
+    "name": "HowToMen",
+    "minScore": 65,
+    "category": "Lifestyle",
+    "section": "entertainment",
+    "tags": ["lifestyle", "tips", "culture"],
+    "featured": false
+  },
+  {
+    "id": "UCpYAQ8iVPlQwXWN7BE2chgQ",
+    "name": "AutoFun",
+    "minScore": 65,
+    "category": "Automotive",
+    "section": "entertainment",
+    "tags": ["cars", "automotive", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCg_Li5b7mfzM_NDUw4hQn6w",
+    "name": "Tech Essentials",
+    "minScore": 70,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "essentials", "reviews"],
+    "featured": false
+  },
+  {
+    "id": "UCdKvOz1yqCbty9TwmEUQSiA",
+    "name": "Better Creating",
+    "minScore": 70,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["content creation", "productivity", "tools"],
+    "featured": false
+  },
+  {
+    "id": "UCwOBG77Tm8cE24FPxHb_abw",
+    "name": "Productive Dude",
+    "minScore": 70,
+    "category": "Productivity",
+    "section": "productivity",
+    "tags": ["productivity", "workflows", "tips"],
+    "featured": false
+  },
+  {
+    "id": "UCV6lt7Sr7gymjXbwWVz0gMw",
+    "name": "The Xoor",
+    "minScore": 70,
+    "category": "Tech Reviews",
+    "section": "technology",
+    "tags": ["tech", "reviews", "gadgets"],
+    "featured": false
+  },
+  {
+    "id": "UCwAnu01qlnVg1Ai2AbtTMaA",
+    "name": "Jeff
