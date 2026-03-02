@@ -43,22 +43,38 @@ class DiscoveryAgent {
   }
 
   async loadConfig() {
-    const stored = await this.env.CONTENT_KV.get('channels_config');
-    if (stored) return JSON.parse(stored);
-    
-    return [
-      {
-        id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
-        name: "Google Developers",
-        type: "youtube",
-        minScore: 75,
-        category: "Web Development",
-        section: "engineering",
-        tags: ["cloud", "api", "performance"],
-        featured: false
-      }
-    ];
+  // Primary: Load from KV (fast, updatable)
+  const stored = await this.env.CONTENT_KV.get('channels_config');
+  if (stored) {
+    return JSON.parse(stored);
   }
+  
+  // Fallback: Fetch from GitHub raw URL
+  try {
+    const response = await fetch('https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json');
+    if (response.ok) {
+      const channels = await response.json();
+      // Cache in KV for next time
+      await this.env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+      return channels;
+    }
+  } catch (e) {
+    console.error('Failed to load channels:', e);
+  }
+  
+  // Emergency fallback: minimal config
+  return [{
+    id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+    name: "Google Developers",
+    type: "youtube",
+    minScore: 75,
+    category: "Web Development",
+    section: "engineering",
+    tags: ["cloud"],
+    featured: false
+  }];
+}
+
 
   async loadCreatorCache(config) {
     if (this.creatorCache) return this.creatorCache;
