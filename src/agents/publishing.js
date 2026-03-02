@@ -1,3 +1,38 @@
+// Publishing Agent with Full SEO
+class PublishingAgent {
+  constructor(env) {
+    this.env = env;
+  }
+
+  async publish(data) {
+    const { notionPageId, title, content, category, section, tags, featured = false } = data;
+    
+    const metadata = {
+      title,
+      description: this.generateMetaDescription(content),
+      date: new Date().toISOString().split('T')[0],
+      slug: this.createSlug(title),
+      category: category || 'General',
+      section: section || 'general',
+      tags: tags || [],
+      featured
+    };
+
+    // Generate affiliate-linked content
+    const contentWithAffiliates = this.insertAffiliateLinks(content);
+    
+    // Convert to SEO-optimized HTML
+    const html = this.convertToHTML(contentWithAffiliates, metadata);
+    
+    // Build path: /section/category/slug.html
+    const categoryPath = metadata.category.toLowerCase().replace(/\s+/g, '-');
+    const filePath = `${metadata.section}/${categoryPath}/${metadata.slug}.html`;
+    
+    // Commit to GitHub
+    await this.commitToGitHub(filePath, html, metadata);
+    
+    const url = `https://techfusionreport.com/${filePath}`;
+    
 import { AffiliateInserter } from '../utils/affiliates.js';
 
 export class PublishingAgent {
@@ -523,5 +558,106 @@ Format clearly with headers.`;
     return new Response(JSON.stringify({ status: 'ab-test-created', variants }), {
       headers: { 'Content-Type': 'application/json' }
     });
+  }
+}
+    // Check if file exists
+    const checkRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
+      headers: {
+        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    });
+    
+    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
+    
+    // Create or update file
+    const commitRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: `Add: ${metadata.title} [${metadata.category}]`,
+        content: base64Content,
+        sha,
+        committer: {
+          name: 'TechFusion Bot',
+          email: 'bot@techfusionreport.com'
+        }
+      })
+    });
+    
+    if (!commitRes.ok) {
+      throw new Error(`GitHub commit failed: ${await commitRes.text()}`);
+    }
+    
+    return (await commitRes.json()).content.html_url;
+  }
+
+  async updateNotionStatus(pageId, status, url) {
+    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        properties: { 
+          Status: { select: { name: status } },
+          "Published URL": { url }
+        }
+      })
+    });
+  }
+
+  async generateSocialContent(metadata, content) {
+    const prompt = `Create social media posts for:
+Title: ${metadata.title}
+Category: ${metadata.category}
+Tags: ${metadata.tags.join(', ')}
+
+Create:
+1. Twitter/X thread (3-5 tweets, engaging)
+2. LinkedIn post (professional, 2 paragraphs)
+3. Dev.to title and 4 tags
+
+Format clearly.`;
+    
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+      
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      return {
+        twitter: this.extractSection(text, 'Twitter') || `🚀 ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
+        linkedin: this.extractSection(text, 'LinkedIn') || `Just published: ${metadata.title}`,
+        devto: {
+          title: metadata.title,
+          tags: metadata.tags.slice(0, 4)
+        }
+      };
+    } catch {
+      // Fallback if AI fails
+      return {
+        twitter: `🚀 New post: ${metadata.title}\n\nCheck it out! #${metadata.category.replace(/\s+/g, '')}`,
+        linkedin: `Just published: ${metadata.title} in our ${metadata.category} section.`,
+        devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
+      };
+    }
+  }
+
+  extractSection(text, header) {
+    const match = text.match(new RegExp(`${header}:?[\\s]*\\n([\\s\\S]*?)(?=\\n\\w+:|$)`, 'i'));
+    return match ? match[1].trim() : null;
   }
 }
