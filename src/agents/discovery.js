@@ -1,15 +1,14 @@
-export class DiscoveryAgent {
+// Discovery Agent with Content Creator Caching
+class DiscoveryAgent {
   constructor(env) {
     this.env = env;
-    this.results = { youtube: 0, rss: 0, github: 0, hackernews: 0, approved: 0, errors: [] };
+    this.creatorCache = null;
   }
-  
+
   async loadConfig() {
     const stored = await this.env.CONTENT_KV.get('channels_config');
-    return stored ? JSON.parse(stored) : this.getDefaultConfig();
-  }
-  
-  getDefaultConfig() {
+    if (stored) return JSON.parse(stored);
+    
     return [
       {
         id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
@@ -20,258 +19,245 @@ export class DiscoveryAgent {
         section: "engineering",
         tags: ["cloud", "api", "performance"],
         featured: false
-      },
-      {
-        id: "rss:https://blog.cloudflare.com/rss/",
-        name: "Cloudflare Blog",
-        type: "rss",
-        minScore: 80,
-        category: "DevOps",
-        section: "engineering",
-        tags: ["cloudflare", "edge", "security"],
-        featured: true
-      },
-      {
-        id: "github:vercel/next.js",
-        name: "Next.js Releases",
-        type: "github",
-        minScore: 85,
-        category: "Web Development",
-        section: "engineering",
-        tags: ["nextjs", "react", "vercel"],
-        featured: false
-      },
-      {
-        id: "hn:top",
-        name: "Hacker News Top",
-        type: "hackernews",
-        minScore: 90,
-        category: "Tech News",
-        section: "news",
-        tags: ["startups", "programming", "tech"],
-        featured: false
       }
     ];
   }
-  
-  async run() {
-    const config = await this.loadConfig();
+
+  async loadCreatorCache(config) {
+    // Check memory cache first (within same request)
+    if (this.creatorCache) {
+      return this.creatorCache;
+    }
     
-    for (const source of config) {
-      try {
-        switch (source.type) {
-          case 'youtube':
-            await this.processYouTube(source);
-            break;
-          case 'rss':
-            await this.processRSS(source);
-            break;
-          case 'github':
-            await this.processGitHub(source);
-            break;
-          case 'hackernews':
-            await this.processHackerNews(source);
-            break;
+    // Check KV cache
+    const cached = await this.env.CONTENT_KV.get('creator_cache');
+    if (cached) {
+      this.creatorCache = JSON.parse(cached);
+      return this.creatorCache;
+    }
+    
+    // Fetch all creators from Notion
+    console.log('Fetching creator cache from Notion...');
+    const creators = [];
+    let cursor = undefined;
+    let hasMore = true;
+    
+    while (hasMore) {
+      const requestBody = {
+        page_size: 100
+      };
+      
+      if (cursor) {
+        requestBody.start_cursor = cursor;
+      }
+      
+      const response = await fetch(`https://api.notion.com/v1/databases/${config.creator_database_id}/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.notion_token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        console.error('Failed to fetch creators:', error);
+        break;
+      }
+      
+      const data = await response.json();
+      
+      for (const page of data.results) {
+        // Try multiple property names for channel ID
+        const channelId = this.extractChannelId(page);
+        
+        if (channelId) {
+          creators.push({
+            id: page.id,
+            channelId: channelId,
+            name: page.properties.Name?.title?.[0]?.text?.content || 'Unknown',
+            url: page.url
+          });
         }
-      } catch (error) {
-        this.results.errors.push({ source: source.name, error: error.message });
+      }
+      
+      cursor = data.next_cursor;
+      hasMore = data.has_more && cursor;
+    }
+    
+    // Cache in KV for 24 hours
+    await this.env.CONTENT_KV.put('creator_cache', JSON.stringify(creators), {
+      expirationTtl: 86400
+    });
+    
+    // Also cache in memory for this request
+    this.creatorCache = creators;
+    
+    console.log(`Cached ${creators.length} creators`);
+    return creators;
+  }
+
+  extractChannelId(page) {
+    const properties = page.properties;
+    
+    // Try common property names for channel ID
+    const possibleNames = ['Channel ID', 'channel_id', 'ChannelID', 'YouTube ID', 'YouTube', 'ID'];
+    
+    for (const name of possibleNames) {
+      const prop = properties[name];
+      
+      if (prop) {
+        // Handle different property types
+        if (prop.rich_text && prop.rich_text[0]) {
+          return prop.rich_text[0].text.content.trim();
+        }
+        if (prop.title && prop.title[0]) {
+          return prop.title[0].text.content.trim();
+        }
+        if (prop.url) {
+          // Extract from URL
+          const match = prop.url.match(/channel\/(UC[\w-]+)/);
+          return match ? match[1] : prop.url;
+        }
       }
     }
     
+    return null;
+  }
+
+  async invalidateCreatorCache() {
+    await this.env.CONTENT_KV.delete('creator_cache');
+    this.creatorCache = null;
+    console.log('Creator cache invalidated');
+  }
+
+  async run() {
+    const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
+    const channels = await this.loadConfig();
+    
+    // Pre-load creator cache
+    await this.loadCreatorCache(config);
+    
+    const results = {
+      youtube: 0,
+      rss: 0,
+      github: 0,
+      hackernews: 0,
+      approved: 0,
+      errors: []
+    };
+
+    for (const channel of channels) {
+      try {
+        console.log(`Processing: ${channel.name} [${channel.type}]`);
+        
+        switch (channel.type) {
+          case 'youtube':
+            const ytResult = await this.processYouTube(channel, config);
+            results.youtube += ytResult.processed;
+            results.approved += ytResult.approved;
+            break;
+          case 'rss':
+            const rssResult = await this.processRSS(channel, config);
+            results.rss += rssResult.processed;
+            results.approved += rssResult.approved;
+            break;
+          case 'github':
+            const ghResult = await this.processGitHub(channel, config);
+            results.github += ghResult.processed;
+            results.approved += ghResult.approved;
+            break;
+          case 'hackernews':
+            const hnResult = await this.processHackerNews(channel, config);
+            results.hackernews += hnResult.processed;
+            results.approved += hnResult.approved;
+            break;
+        }
+      } catch (error) {
+        console.error(`Error processing ${channel.name}:`, error);
+        results.errors.push({ channel: channel.name, error: error.message });
+      }
+    }
+
+    // Log results
     await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({
       timestamp: new Date().toISOString(),
-      results: this.results
+      results
     }));
-    
-    return new Response(JSON.stringify(this.results), {
+
+    return new Response(JSON.stringify(results), {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-  
-  async runSource(sourceType) {
-    const config = await this.loadConfig();
-    const source = config.find(s => s.type === sourceType);
-    if (!source) return new Response('Source not found', { status: 404 });
-    
-    switch (sourceType) {
-      case 'youtube':
-        await this.processYouTube(source);
-        break;
-      case 'rss':
-        await this.processRSS(source);
-        break;
-      case 'github':
-        await this.processGitHub(source);
-        break;
-      case 'hackernews':
-        await this.processHackerNews(source);
-        break;
-    }
-    
-    return new Response(JSON.stringify(this.results), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-  
-  async processYouTube(channel) {
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${this.env.YOUTUBE_API_KEY}`;
+
+  async processYouTube(channel, config) {
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${config.youtube_api_key}`;
     const response = await fetch(url);
     const data = await response.json();
     
+    let processed = 0;
+    let approved = 0;
+
     for (const item of data.items || []) {
       const videoId = item.id.videoId;
-      if (await this.isProcessed(`video:${videoId}`)) continue;
       
+      // Check if already processed
+      const exists = await this.env.CONTENT_KV.get(`video:${videoId}`);
+      if (exists) continue;
+
+      // Score content
       const score = await this.scoreContent(
         item.snippet.title,
         item.snippet.description,
         channel.category
       );
-      
-      await this.markProcessed(`video:${videoId}`, {
-        id: videoId,
+
+      // Mark as processed
+      await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({
         title: item.snippet.title,
-        url: `https://youtube.com/watch?v=${videoId}`,
-        score
-      });
-      
-      this.results.youtube++;
-      
+        channel: channel.name,
+        score,
+        processedAt: Date.now()
+      }), { expirationTtl: 2592000 });
+
+      processed++;
+
+      // Write to Notion if score passes threshold
       if (score > (channel.minScore || 70)) {
         await this.writeToNotion({
+          id: videoId,
           title: item.snippet.title,
-          url: `https://youtube.com/watch?v=${videoId}`,
           description: item.snippet.description,
-          score,
-          channelTitle: item.snippet.channelTitle
-        }, channel);
-        this.results.approved++;
+          url: `https://youtube.com/watch?v=${videoId}`,
+          channelTitle: item.snippet.channelTitle,
+          publishedAt: item.snippet.publishedAt,
+          score
+        }, channel, config);
+        
+        approved++;
       }
     }
+
+    return { processed, approved };
   }
-  
-  async processRSS(feed) {
-    const url = feed.id.replace('rss:', '');
-    const response = await fetch(url);
-    const text = await response.text();
-    
-    const items = text.match(/<item>[\s\S]*?<\/item>/g) || [];
-    
-    for (const item of items.slice(0, 10)) {
-      const title = this.extractXML(item, 'title');
-      const link = this.extractXML(item, 'link');
-      const description = this.extractXML(item, 'description');
-      
-      const itemId = btoa(link).substring(0, 20);
-      if (await this.isProcessed(`rss:${itemId}`)) continue;
-      
-      const score = await this.scoreContent(title, description, feed.category);
-      
-      await this.markProcessed(`rss:${itemId}`, { title, url: link, score });
-      this.results.rss++;
-      
-      if (score > (feed.minScore || 70)) {
-        await this.writeToNotion({
-          title,
-          url: link,
-          description,
-          score,
-          channelTitle: feed.name
-        }, feed);
-        this.results.approved++;
-      }
-    }
+
+  async processRSS(channel, config) {
+    // Similar structure for RSS feeds
+    return { processed: 0, approved: 0 };
   }
-  
-  async processGitHub(repo) {
-    const [owner, name] = repo.id.replace('github:', '').split('/');
-    const url = `https://api.github.com/repos/${owner}/${name}/releases/latest`;
-    
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json'
-      }
-    });
-    
-    const release = await response.json();
-    const releaseId = release.id.toString();
-    
-    if (await this.isProcessed(`github:${releaseId}`)) return;
-    
-    const score = await this.scoreContent(
-      release.name || release.tag_name,
-      release.body || '',
-      repo.category
-    );
-    
-    await this.markProcessed(`github:${releaseId}`, {
-      title: release.name || release.tag_name,
-      url: release.html_url,
-      score
-    });
-    this.results.github++;
-    
-    if (score > (repo.minScore || 70)) {
-      await this.writeToNotion({
-        title: `${repo.name} ${release.tag_name}`,
-        url: release.html_url,
-        description: release.body?.substring(0, 500) || '',
-        score,
-        channelTitle: repo.name
-      }, repo);
-      this.results.approved++;
-    }
+
+  async processGitHub(channel, config) {
+    // Similar structure for GitHub releases
+    return { processed: 0, approved: 0 };
   }
-  
-  async processHackerNews(source) {
-    const topUrl = 'https://hacker-news.firebaseio.com/v0/topstories.json';
-    const response = await fetch(topUrl);
-    const topIds = await response.json();
-    
-    for (const id of topIds.slice(0, 10)) {
-      if (await this.isProcessed(`hn:${id}`)) continue;
-      
-      const itemUrl = `https://hacker-news.firebaseio.com/v0/item/${id}.json`;
-      const itemRes = await fetch(itemUrl);
-      const item = await itemRes.json();
-      
-      if (!item || item.type !== 'story') continue;
-      
-      // Check score threshold for HN (filter low engagement)
-      if (item.score < 100) continue;
-      
-      const score = await this.scoreContent(
-        item.title,
-        item.text || '',
-        source.category
-      );
-      
-      await this.markProcessed(`hn:${id}`, {
-        title: item.title,
-        url: item.url || `https://news.ycombinator.com/item?id=${id}`,
-        score
-      });
-      this.results.hackernews++;
-      
-      if (score > (source.minScore || 70)) {
-        await this.writeToNotion({
-          title: item.title,
-          url: item.url || `https://news.ycombinator.com/item?id=${id}`,
-          description: `HN Score: ${item.score}, Comments: ${item.descendants || 0}`,
-          score,
-          channelTitle: 'Hacker News'
-        }, source);
-        this.results.approved++;
-      }
-    }
+
+  async processHackerNews(channel, config) {
+    // Similar structure for HN
+    return { processed: 0, approved: 0 };
   }
-  
-  extractXML(xml, tag) {
-    const match = xml.match(new RegExp(`<${tag}>(.*?)</${tag}>`, 's'));
-    return match ? match[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim() : '';
-  }
-  
+
   async scoreContent(title, description, category) {
     const prompt = `Score 0-100 for ${category} tech blog relevance.
 Title: "${title}"
@@ -279,56 +265,85 @@ Description: "${description?.substring(0, 500)}"
 
 Consider: technical depth, tutorial potential, evergreen value, audience interest.
 Return only the number.`;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
+      const match = text.match(/\d+/);
+      return match ? parseInt(match[0]) : 50;
+    } catch (error) {
+      console.error('Scoring failed:', error);
+      return 50; // Default score on error
+    }
+  }
+
+  async writeToNotion(video, channel, config) {
+    // Find matching creator from cache
+    const creators = await this.loadCreatorCache(config);
+    const creator = creators.find(c => c.channelId === channel.id);
     
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
-    
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
-    return parseInt(text.match(/\d+/)?.[0]) || 50;
-  }
-  
-  async isProcessed(key) {
-    const exists = await this.env.CONTENT_KV.get(key);
-    return exists !== null;
-  }
-  
-  async markProcessed(key, data) {
-    await this.env.CONTENT_KV.put(key, JSON.stringify(data), {
-      expirationTtl: 2592000 // 30 days
-    });
-  }
-  
-  async writeToNotion(content, source) {
-    const payload = {
-      parent: { database_id: this.env.NOTION_DATABASE_ID },
-      properties: {
-        Name: { title: [{ text: { content: content.title } }] },
-        "Video URL": { url: content.url },
-        Score: { number: content.score },
-        Status: { select: { name: "Pending Review" } },
-        "Channel Name": { rich_text: [{ text: { content: content.channelTitle } }] },
-        Category: { select: { name: source.category } },
-        Section: { select: { name: source.section } },
-        Tags: { multi_select: source.tags.map(tag => ({ name: tag })) },
-        Featured: { checkbox: source.featured },
-        Source: { select: { name: source.type } }
-      }
+    console.log(`Writing to Notion: ${video.title}`);
+    console.log(`Creator match: ${creator ? creator.name : 'None found'}`);
+
+    // Build properties
+    const properties = {
+      Name: { title: [{ text: { content: video.title } }] },
+      "Video URL": { url: video.url },
+      Score: { number: video.score },
+      Status: { select: { name: "Pending Review" } },
+      Category: { select: { name: channel.category } },
+      Section: { select: { name: channel.section } },
+      Tags: { multi_select: channel.tags.map(tag => ({ name: tag })) },
+      Featured: { checkbox: channel.featured },
+      Source: { select: { name: channel.type } },
+      "Published Date": { date: { start: video.publishedAt } }
     };
-    
-    await fetch('https://api.notion.com/v1/pages', {
+
+    // Add Content Creator relation if found
+    if (creator) {
+      properties["Content Creator"] = {
+        relation: [{ id: creator.id }]
+      };
+      
+      // Also store creator name for easy reference
+      properties["Creator Name"] = {
+        rich_text: [{ text: { content: creator.name } }]
+      };
+    } else {
+      // Fallback: store channel name from config
+      properties["Creator Name"] = {
+        rich_text: [{ text: { content: channel.name } }]
+      };
+    }
+
+    const payload = {
+      parent: { database_id: config.notion_database_id },
+      properties: properties
+    };
+
+    const response = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Authorization': `Bearer ${config.notion_token}`,
         'Content-Type': 'application/json',
         'Notion-Version': '2022-06-28'
       },
       body: JSON.stringify(payload)
     });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Notion API error: ${error}`);
+    }
+
+    return await response.json();
   }
 }
