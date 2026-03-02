@@ -11,22 +11,47 @@ export class Router {
     this.routes.set(`POST:${path}`, handler);
   }
   
+  matchPath(routePath, actualPath) {
+    const routeParts = routePath.split('/');
+    const actualParts = actualPath.split('/');
+    
+    if (routeParts.length !== actualParts.length) return null;
+    
+    const params = {};
+    for (let i = 0; i < routeParts.length; i++) {
+      if (routeParts[i].startsWith(':')) {
+        params[routeParts[i].slice(1)] = actualParts[i];
+      } else if (routeParts[i] !== actualParts[i]) {
+        return null;
+      }
+    }
+    
+    return params;
+  }
+  
   async handle(request, env) {
     const url = new URL(request.url);
-    const key = `${request.method}:${url.pathname}`;
-    const handler = this.routes.get(key);
+    const method = request.method;
+    const path = url.pathname;
     
-    if (!handler) {
-      return new Response('Not Found', { status: 404 });
+    // Try exact match first
+    const exactKey = `${method}:${path}`;
+    if (this.routes.has(exactKey)) {
+      return await this.routes.get(exactKey)(request, env);
     }
     
-    try {
-      return await handler(request, env);
-    } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), { 
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    // Try pattern match
+    for (const [key, handler] of this.routes) {
+      const [routeMethod, routePath] = key.split(':');
+      if (routeMethod !== method) continue;
+      
+      const params = this.matchPath(routePath, path);
+      if (params) {
+        request.params = params;
+        return await handler(request, env);
+      }
     }
+    
+    return new Response('Not Found', { status: 404 });
   }
 }
