@@ -1,7 +1,8 @@
 // TechFusion Agents - Complete Worker
 // File: src/index.js
+// Supports 87+ channels with KV storage
 
-// Router
+// ========== ROUTER ==========
 class Router {
   constructor() {
     this.routes = new Map();
@@ -13,6 +14,10 @@ class Router {
   
   post(path, handler) {
     this.routes.set(`POST:${path}`, handler);
+  }
+  
+  delete(path, handler) {
+    this.routes.set(`DELETE:${path}`, handler);
   }
   
   async handle(request, env) {
@@ -27,6 +32,7 @@ class Router {
     try {
       return await handler(request, env);
     } catch (error) {
+      console.error('Router error:', error);
       return new Response(JSON.stringify({ error: error.message }), { 
         status: 500,
         headers: { 'Content-Type': 'application/json' }
@@ -35,48 +41,52 @@ class Router {
   }
 }
 
-// Discovery Agent with Creator Caching
+// ========== DISCOVERY AGENT ==========
 class DiscoveryAgent {
   constructor(env) {
     this.env = env;
     this.creatorCache = null;
+    this.config = null;
   }
 
   async loadConfig() {
-  // Primary: Load from KV (fast, updatable)
-  const stored = await this.env.CONTENT_KV.get('channels_config');
-  if (stored) {
-    return JSON.parse(stored);
-  }
-  
-  // Fallback: Fetch from GitHub raw URL
-  try {
-    const response = await fetch('https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json');
-    if (response.ok) {
-      const channels = await response.json();
-      // Cache in KV for next time
-      await this.env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+    // Primary: Load from KV (fast, updatable)
+    const stored = await this.env.CONTENT_KV.get('channels_config');
+    if (stored) {
+      const channels = JSON.parse(stored);
+      console.log(`Loaded ${channels.length} channels from KV`);
       return channels;
     }
-  } catch (e) {
-    console.error('Failed to load channels:', e);
+    
+    // Fallback: Fetch from GitHub raw URL
+    try {
+      const response = await fetch('https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json');
+      if (response.ok) {
+        const channels = await response.json();
+        // Cache in KV for next time
+        await this.env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+        console.log(`Loaded ${channels.length} channels from GitHub`);
+        return channels;
+      }
+    } catch (e) {
+      console.error('Failed to load from GitHub:', e);
+    }
+    
+    // Emergency fallback
+    console.warn('Using emergency fallback config');
+    return [{
+      id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+      name: "Google Developers",
+      type: "youtube",
+      minScore: 75,
+      category: "Web Development",
+      section: "engineering",
+      tags: ["cloud", "api", "performance"],
+      featured: false
+    }];
   }
-  
-  // Emergency fallback: minimal config
-  return [{
-    id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
-    name: "Google Developers",
-    type: "youtube",
-    minScore: 75,
-    category: "Web Development",
-    section: "engineering",
-    tags: ["cloud"],
-    featured: false
-  }];
-}
 
-
-  async loadCreatorCache(config) {
+  async loadCreatorCache() {
     if (this.creatorCache) return this.creatorCache;
     
     const cached = await this.env.CONTENT_KV.get('creator_cache');
@@ -93,17 +103,20 @@ class DiscoveryAgent {
       const requestBody = { page_size: 100 };
       if (cursor) requestBody.start_cursor = cursor;
       
-      const response = await fetch(`https://api.notion.com/v1/databases/${config.creator_database_id}/query`, {
+      const response = await fetch(`https://api.notion.com/v1/databases/${this.env.CREATOR_DATABASE_ID}/query`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${config.notion_token}`,
+          'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
           'Content-Type': 'application/json',
           'Notion-Version': '2022-06-28'
         },
         body: JSON.stringify(requestBody)
       });
       
-      if (!response.ok) break;
+      if (!response.ok) {
+        console.error('Failed to fetch creators:', await response.text());
+        break;
+      }
       
       const data = await response.json();
       
@@ -127,6 +140,7 @@ class DiscoveryAgent {
     });
     
     this.creatorCache = creators;
+    console.log(`Cached ${creators.length} creators`);
     return creators;
   }
 
@@ -148,7 +162,7 @@ class DiscoveryAgent {
   }
 
   async run() {
-    const config = {
+    this.config = {
       notion_token: this.env.NOTION_TOKEN,
       notion_database_id: this.env.NOTION_DATABASE_ID,
       creator_database_id: this.env.CREATOR_DATABASE_ID,
@@ -157,18 +171,43 @@ class DiscoveryAgent {
     };
     
     const channels = await this.loadConfig();
-    await this.loadCreatorCache(config);
+    await this.loadCreatorCache();
     
-    const results = { youtube: 0, approved: 0, errors: [] };
+    const results = { 
+      total: channels.length,
+      processed: 0,
+      approved: 0,
+      byType: {},
+      errors: []
+    };
 
     for (const channel of channels) {
       try {
-        if (channel.type === 'youtube') {
-          const yt = await this.processYouTube(channel, config);
-          results.youtube += yt.processed;
-          results.approved += yt.approved;
+        console.log(`Processing: ${channel.name} [${channel.type}]`);
+        
+        let channelResult = { processed: 0, approved: 0 };
+        
+        switch (channel.type) {
+          case 'youtube':
+            channelResult = await this.processYouTube(channel);
+            break;
+          case 'rss':
+            channelResult = await this.processRSS(channel);
+            break;
+          case 'github':
+            channelResult = await this.processGitHub(channel);
+            break;
+          case 'hackernews':
+            channelResult = await this.processHackerNews(channel);
+            break;
         }
+        
+        results.processed += channelResult.processed;
+        results.approved += channelResult.approved;
+        results.byType[channel.type] = (results.byType[channel.type] || 0) + channelResult.processed;
+        
       } catch (error) {
+        console.error(`Error: ${channel.name}:`, error);
         results.errors.push({ channel: channel.name, error: error.message });
       }
     }
@@ -183,8 +222,8 @@ class DiscoveryAgent {
     });
   }
 
-  async processYouTube(channel, config) {
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${config.youtube_api_key}`;
+  async processYouTube(channel) {
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=5&order=date&type=video&key=${this.config.youtube_api_key}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -195,10 +234,17 @@ class DiscoveryAgent {
       const videoId = item.id.videoId;
       if (await this.env.CONTENT_KV.get(`video:${videoId}`)) continue;
 
-      const score = await this.scoreContent(item.snippet.title, item.snippet.description, channel.category, config.gemini_api_key);
+      const score = await this.scoreContent(
+        item.snippet.title, 
+        item.snippet.description, 
+        channel.category
+      );
 
       await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({
-        title: item.snippet.title, score, processedAt: Date.now()
+        title: item.snippet.title, 
+        channel: channel.name,
+        score, 
+        processedAt: Date.now()
       }), { expirationTtl: 2592000 });
 
       processed++;
@@ -212,7 +258,7 @@ class DiscoveryAgent {
           channelTitle: item.snippet.channelTitle,
           publishedAt: item.snippet.publishedAt,
           score
-        }, channel, config);
+        }, channel);
         approved++;
       }
     }
@@ -220,11 +266,29 @@ class DiscoveryAgent {
     return { processed, approved };
   }
 
-  async scoreContent(title, description, category, apiKey) {
-    const prompt = `Score 0-100 for ${category} tech blog relevance. Title: "${title}" Description: "${description?.substring(0, 500)}". Return only the number.`;
+  async processRSS(channel) {
+    // TODO: Implement RSS processing
+    return { processed: 0, approved: 0 };
+  }
+
+  async processGitHub(channel) {
+    // TODO: Implement GitHub releases processing
+    return { processed: 0, approved: 0 };
+  }
+
+  async processHackerNews(channel) {
+    // TODO: Implement HN processing
+    return { processed: 0, approved: 0 };
+  }
+
+  async scoreContent(title, description, category) {
+    const prompt = `Score 0-100 for ${category} tech blog relevance.
+Title: "${title}"
+Description: "${description?.substring(0, 500)}"
+Return only the number.`;
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.config.gemini_api_key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
@@ -234,14 +298,14 @@ class DiscoveryAgent {
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
       const match = text.match(/\d+/);
       return match ? parseInt(match[0]) : 50;
-    } catch {
+    } catch (error) {
+      console.error('Scoring failed:', error);
       return 50;
     }
   }
 
-  async writeToNotion(video, channel, config) {
-    const creators = await this.loadCreatorCache(config);
-    const creator = creators.find(c => c.channelId === channel.id);
+  async writeToNotion(video, channel) {
+    const creator = this.creatorCache?.find(c => c.channelId === channel.id);
     
     const properties = {
       Name: { title: [{ text: { content: video.title } }] },
@@ -263,9 +327,453 @@ class DiscoveryAgent {
       properties["Creator Name"] = { rich_text: [{ text: { content: channel.name } }] };
     }
 
-    await fetch('https://api.notion.com/v1/pages', {
+    const response = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${config.notion_token}`,
+        'Authorization': `Bearer ${this.config.notion_token}`,
         'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        parent: { database_id: this.config.notion_database_id },
+        properties: properties
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Notion error: ${error}`);
+    }
+
+    return await response.json();
+  }
+}
+
+// ========== ENHANCEMENT AGENT ==========
+class EnhancementAgent {
+  constructor(env) {
+    this.env = env;
+  }
+  
+  async start(data) {
+    const { notionPageId, videoUrl, category, section, tags } = data;
+    
+    const prompt = `Write a comprehensive ${category} blog post about this video: ${videoUrl}
+
+Requirements:
+- 1500-2000 words
+- Technical but accessible tone
+- Include practical code examples
+- TL;DR summary at top
+- Clear conclusion with next steps
+- Format in markdown
+
+Structure:
+1. Introduction (hook + what reader will learn)
+2. TL;DR (3-4 bullet summary)
+3. Main content (3-5 sections with H2)
+4. Code examples (marked as [CODE_BLOCK: description])
+5. Conclusion
+6. Call to action`;
+
+    const draft = await this.callGemini(prompt);
+    
+    // Update Notion with draft
+    await fetch(`https://api.notion.com/v1/blocks/${notionPageId}/children`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        children: [
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [{ text: { content: `🤖 AI Draft Generated [${category}]` } }]
+            }
+          },
+          {
+            object: 'block',
+            type: 'divider',
+            divider: {}
+          },
+          {
+            object: 'block',
+            type: 'code',
+            code: {
+              language: 'markdown',
+              rich_text: [{ text: { content: draft } }]
+            }
+          }
+        ]
+      })
+    });
+    
+    // Update status
+    await fetch(`https://api.notion.com/v1/pages/${notionPageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        properties: { Status: { select: { name: "Draft Review" } } }
+      })
+    });
+    
+    return new Response(JSON.stringify({ 
+      status: 'enhanced', 
+      notionPageId,
+      wordCount: draft.split(/\s+/).length 
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  async callGemini(prompt) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+      })
+    });
+    
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || 'Draft generation failed';
+  }
+}
+
+// ========== PUBLISHING AGENT ==========
+class PublishingAgent {
+  constructor(env) {
+    this.env = env;
+  }
+  
+  async publish(data) {
+    const { notionPageId, title, content, category, section, tags, featured = false } = data;
+    
+    const metadata = {
+      title,
+      description: this.generateMetaDescription(content),
+      date: new Date().toISOString().split('T')[0],
+      slug: this.createSlug(title),
+      category: category || 'General',
+      section: section || 'general',
+      tags: tags || [],
+      featured
+    };
+
+    const contentWithAffiliates = this.insertAffiliateLinks(content);
+    const html = this.convertToHTML(contentWithAffiliates, metadata);
+    
+    const categoryPath = metadata.category.toLowerCase().replace(/\s+/g, '-');
+    const filePath = `${metadata.section}/${categoryPath}/${metadata.slug}.html`;
+    
+    await this.commitToGitHub(filePath, html, metadata);
+    
+    const url = `https://techfusionreport.com/${filePath}`;
+    
+    await this.updateNotionStatus(notionPageId, 'Published', url);
+    
+    const socialContent = await this.generateSocialContent(metadata, content);
+    await this.env.CONTENT_KV.put(`social:${notionPageId}`, JSON.stringify(socialContent));
+    
+    if (metadata.featured) {
+      await this.env.PUBLISHING_QUEUE?.send({
+        type: 'crosspost',
+        notionPageId,
+        platforms: ['medium', 'devto']
+      });
+    }
+    
+    return new Response(JSON.stringify({ 
+      status: 'published', 
+      url,
+      social: socialContent 
+    }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  createSlug(title) {
+    return title.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 60);
+  }
+
+  generateMetaDescription(content) {
+    const firstPara = content.split('\n\n')[0] || '';
+    const plainText = firstPara
+      .replace(/[#*`[\]]/g, '')
+      .replace(/\n/g, ' ')
+      .trim();
+    
+    return plainText.length > 155 
+      ? plainText.substring(0, 152) + '...'
+      : plainText;
+  }
+
+  insertAffiliateLinks(content) {
+    const affiliates = {
+      'cloudflare': 'https://www.cloudflare.com',
+      'vercel': 'https://vercel.com',
+      'notion': 'https://notion.so',
+      'github': 'https://github.com',
+      'linear': 'https://linear.app'
+    };
+    
+    let result = content;
+    
+    result = result.replace(/\[AFFILIATE: (\w+)\]/g, (match, tool) => {
+      const url = affiliates[tool.toLowerCase()];
+      return url ? `[${tool}](${url}?ref=techfusion)` : tool;
+    });
+    
+    return result;
+  }
+
+  convertToHTML(markdown, metadata) {
+    let contentHtml = markdown
+      .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+      .replace(/^## (.*$)/gim, '<h2 id="$1">$1</h2>')
+      .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+      .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
+      .replace(/\*(.*)\*/gim, '<em>$1</em>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" rel="nofollow noopener">$1</a>')
+      .replace(/```([\s\S]*?)```/gim, '<pre><code>$1</code></pre>')
+      .replace(/`([^`]+)`/gim, '<code>$1</code>')
+      .replace(/\[CODE_BLOCK: ([^\]]+)\]/gim, '<div class="code-placeholder"><p>Code: $1</p></div>')
+      .replace(/\n/gim, '<br>');
+
+    const canonicalUrl = `https://techfusionreport.com/${metadata.section}/${metadata.category.toLowerCase().replace(/\s+/g, '-')}/${metadata.slug}.html`;
+    
+    const schemaMarkup = {
+      "@context": "https://schema.org",
+      "@type": "TechArticle",
+      "headline": metadata.title,
+      "description": metadata.description,
+      "datePublished": metadata.date,
+      "author": { "@type": "Organization", "name": "TechFusion Report" },
+      "publisher": { 
+        "@type": "Organization", 
+        "name": "TechFusion Report",
+        "logo": { "@type": "ImageObject", "url": "https://techfusionreport.com/logo.png" }
+      },
+      "articleSection": metadata.category,
+      "keywords": metadata.tags.join(', ')
+    };
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${metadata.title} | TechFusion Report</title>
+  <meta name="description" content="${metadata.description}">
+  <link rel="canonical" href="${canonicalUrl}">
+  
+  <meta property="og:title" content="${metadata.title}">
+  <meta property="og:description" content="${metadata.description}">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="${canonicalUrl}">
+  
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${metadata.title}">
+  <meta name="twitter:description" content="${metadata.description}">
+  
+  <script type="application/ld+json">
+  ${JSON.stringify(schemaMarkup)}
+  </script>
+  
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <article>
+    <header>
+      <span class="category">${metadata.category}</span>
+      ${metadata.featured ? '<span class="featured">Featured</span>' : ''}
+      <h1>${metadata.title}</h1>
+      <time datetime="${metadata.date}">${new Date(metadata.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</time>
+      <div class="tags">${metadata.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}</div>
+    </header>
+    <div class="content">
+      <div class="tldr"><strong>TL;DR:</strong> ${metadata.description}</div>
+      ${contentHtml}
+    </div>
+  </article>
+</body>
+</html>`;
+  }
+
+  async commitToGitHub(path, content, metadata) {
+    const base64Content = btoa(unescape(encodeURIComponent(content)));
+    
+    const checkRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
+      headers: {
+        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    });
+    
+    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
+    
+    const commitRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: `Add: ${metadata.title} [${metadata.category}]`,
+        content: base64Content,
+        sha,
+        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
+      })
+    });
+    
+    if (!commitRes.ok) {
+      throw new Error(`GitHub commit failed: ${await commitRes.text()}`);
+    }
+    
+    return (await commitRes.json()).content.html_url;
+  }
+
+  async updateNotionStatus(pageId, status, url) {
+    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        properties: { 
+          Status: { select: { name: status } },
+          "Published URL": { url }
+        }
+      })
+    });
+  }
+
+  async generateSocialContent(metadata, content) {
+    const prompt = `Create social posts for "${metadata.title}" [${metadata.category}]:
+
+1. Twitter thread (3-5 tweets)
+2. LinkedIn post (professional)
+
+Format with clear headers.`;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+      
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      return {
+        twitter: this.extractSection(text, 'Twitter') || `🚀 ${metadata.title}`,
+        linkedin: this.extractSection(text, 'LinkedIn') || `Just published: ${metadata.title}`,
+        devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
+      };
+    } catch {
+      return {
+        twitter: `🚀 ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
+        linkedin: `Just published: ${metadata.title}`,
+        devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
+      };
+    }
+  }
+
+  extractSection(text, header) {
+    const match = text?.match(new RegExp(`${header}:?[\\s]*\\n([\\s\\S]*?)(?=\\n\\w+:|$)`, 'i'));
+    return match ? match[1].trim() : null;
+  }
+}
+
+// ========== MAIN EXPORT ==========
+export default {
+  async fetch(request, env, ctx) {
+    const router = new Router();
+    
+    // DISCOVERY
+    router.post('/discover', async (req, env) => {
+      const agent = new DiscoveryAgent(env);
+      return await agent.run();
+    });
+    
+    // ADMIN - CHANNEL MANAGEMENT
+    router.get('/admin/channels', async (req, env) => {
+      const channels = await env.CONTENT_KV.get('channels_config');
+      return new Response(channels || '[]', {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    router.post('/admin/channels', async (req, env) => {
+      const channels = await req.json();
+      if (!Array.isArray(channels)) {
+        return new Response('Invalid: must be array', { status: 400 });
+      }
+      await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+      return new Response(JSON.stringify({ 
+        status: 'saved', 
+        count: channels.length 
+      }), { headers: { 'Content-Type': 'application/json' }});
+    });
+    
+    router.post('/admin/channels/refresh', async (req, env) => {
+      try {
+        const response = await fetch('https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json');
+        const channels = await response.json();
+        await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
+        return new Response(JSON.stringify({ 
+          status: 'refreshed', 
+          count: channels.length 
+        }), { headers: { 'Content-Type': 'application/json' }});
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    });
+    
+    router.post('/admin/creators/refresh', async (req, env) => {
+      const agent = new DiscoveryAgent(env);
+      await agent.invalidateCreatorCache();
+      await agent.loadCreatorCache();
+      return new Response(JSON.stringify({ status: 'creators refreshed' }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // ENHANCEMENT
+    router.post('/enhance', async (req, env) => {
+      const data = await req.json();
+      const agent = new EnhancementAgent(env);
+      return await agent.start(data);
+    });
+    
+    // PUBLISHING
+    router.post('/publish', async (req, env) => {
+      const data = await req.json();
+      const agent = new PublishingAgent(env);
+      return await agent.publish(data);
+    });
+    
+    // STATUS
+    router.get('/status', async (req, env) => {
+      const lastDiscovery = await env.CONTENT_KV.get('last_discovery');
+      const channels = await env.CONTENT_KV.get('channels_config');
+      const creators = await env.CONTENT_KV.get('creator_cache');
+      
+      return new Response(JSON.stringify({
+        status: '
