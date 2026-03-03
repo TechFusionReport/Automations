@@ -1,5 +1,5 @@
-name = "techfusion-agents"
-main = "src/index.js"
+name = "techfusion-api"
+main = "src/api.js"
 compatibility_date = "2024-01-01"
 
 [[kv_namespaces]]
