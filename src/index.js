@@ -776,4 +776,405 @@ export default {
       const creators = await env.CONTENT_KV.get('creator_cache');
       
       return new Response(JSON.stringify({
-        status: '
+                status: 'operational',
+        lastDiscovery: lastDiscovery ? JSON.parse(lastDiscovery) : null,
+        channelsLoaded: channels ? JSON.parse(channels).length : 0,
+        creatorsCached: creators ? JSON.parse(creators).length : 0,
+        timestamp: new Date().toISOString()
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // HEALTH CHECK
+    router.get('/health', async (req, env) => {
+      return new Response(JSON.stringify({
+        status: 'healthy',
+        version: '2.1.0',
+        uptime: Date.now()
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // QUEUE HANDLER (for background processing)
+    router.post('/queue/process', async (req, env) => {
+      const { type, data } = await req.json();
+      
+      switch(type) {
+        case 'crosspost':
+          return await handleCrosspost(data, env);
+        case 'notify':
+          return await handleNotification(data, env);
+        case 'index':
+          return await handleIndexing(data, env);
+        default:
+          return new Response('Unknown queue type', { status: 400 });
+      }
+    });
+    
+    // WEBHOOK HANDLERS
+    router.post('/webhook/notion', async (req, env) => {
+      const payload = await req.json();
+      
+      if (payload.type === 'page.updated') {
+        const pageId = payload.page.id;
+        const status = payload.page.properties?.Status?.select?.name;
+        
+        if (status === 'Ready to Enhance') {
+          const agent = new EnhancementAgent(env);
+          return await agent.start({
+            notionPageId: pageId,
+            videoUrl: payload.page.properties?.['Video URL']?.url,
+            category: payload.page.properties?.Category?.select?.name,
+            section: payload.page.properties?.Section?.select?.name,
+            tags: payload.page.properties?.Tags?.multi_select?.map(t => t.name) || []
+          });
+        }
+        
+        if (status === 'Ready to Publish') {
+          const content = payload.page.properties?.['Content']?.rich_text?.[0]?.text?.content;
+          const agent = new PublishingAgent(env);
+          return await agent.publish({
+            notionPageId: pageId,
+            title: payload.page.properties?.Name?.title?.[0]?.text?.content,
+            content: content,
+            category: payload.page.properties?.Category?.select?.name,
+            section: payload.page.properties?.Section?.select?.name,
+            tags: payload.page.properties?.Tags?.multi_select?.map(t => t.name) || [],
+            featured: payload.page.properties?.Featured?.checkbox || false
+          });
+        }
+      }
+      
+      return new Response('Webhook processed', { status: 200 });
+    });
+    
+    router.post('/webhook/github', async (req, env) => {
+      const payload = await req.json();
+      
+      if (payload.ref === 'refs/heads/main' && payload.commits) {
+        for (const commit of payload.commits) {
+          if (commit.message.includes('[refresh-channels]')) {
+            const agent = new DiscoveryAgent(env);
+            await agent.loadConfig(); // Force refresh
+            console.log('Channels refreshed via GitHub webhook');
+          }
+        }
+      }
+      
+      return new Response('GitHub webhook processed', { status: 200 });
+    });
+    
+    // BATCH OPERATIONS
+    router.post('/batch/enhance', async (req, env) => {
+      const { pageIds } = await req.json();
+      const results = [];
+      
+      for (const pageId of pageIds) {
+        try {
+          const notionRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+            headers: {
+              'Authorization': `Bearer ${env.NOTION_TOKEN}`,
+              'Notion-Version': '2022-06-28'
+            }
+          });
+          
+          if (!notionRes.ok) continue;
+          
+          const page = await notionRes.json();
+          const agent = new EnhancementAgent(env);
+          
+          const result = await agent.start({
+            notionPageId: pageId,
+            videoUrl: page.properties?.['Video URL']?.url,
+            category: page.properties?.Category?.select?.name,
+            section: page.properties?.Section?.select?.name,
+            tags: page.properties?.Tags?.multi_select?.map(t => t.name) || []
+          });
+          
+          results.push({ pageId, status: 'enhanced' });
+        } catch (error) {
+          results.push({ pageId, status: 'error', error: error.message });
+        }
+      }
+      
+      return new Response(JSON.stringify({ processed: results.length, results }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    router.post('/batch/publish', async (req, env) => {
+      const { pageIds } = await req.json();
+      const results = [];
+      
+      for (const pageId of pageIds) {
+        try {
+          const notionRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+            headers: {
+              'Authorization': `Bearer ${env.NOTION_TOKEN}`,
+              'Notion-Version': '2022-06-28'
+            }
+          });
+          
+          if (!notionRes.ok) continue;
+          
+          const page = await notionRes.json();
+          const contentBlock = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children`, {
+            headers: {
+              'Authorization': `Bearer ${env.NOTION_TOKEN}`,
+              'Notion-Version': '2022-06-28'
+            }
+          });
+          
+          const blocks = await contentBlock.json();
+          let content = '';
+          
+          for (const block of blocks.results) {
+            if (block.type === 'code' && block.code?.language === 'markdown') {
+              content = block.code.rich_text.map(t => t.text.content).join('');
+              break;
+            }
+          }
+          
+          const agent = new PublishingAgent(env);
+          const result = await agent.publish({
+            notionPageId: pageId,
+            title: page.properties?.Name?.title?.[0]?.text?.content,
+            content: content,
+            category: page.properties?.Category?.select?.name,
+            section: page.properties?.Section?.select?.name,
+            tags: page.properties?.Tags?.multi_select?.map(t => t.name) || [],
+            featured: page.properties?.Featured?.checkbox || false
+          });
+          
+          results.push({ pageId, status: 'published', url: result.url });
+        } catch (error) {
+          results.push({ pageId, status: 'error', error: error.message });
+        }
+      }
+      
+      return new Response(JSON.stringify({ processed: results.length, results }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // ANALYTICS & REPORTING
+    router.get('/analytics/summary', async (req, env) => {
+      const lastDiscovery = await env.CONTENT_KV.get('last_discovery');
+      const discovery = lastDiscovery ? JSON.parse(lastDiscovery) : null;
+      
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const keys = await env.CONTENT_KV.list({ prefix: 'video:' });
+      let recentVideos = 0;
+      
+      for (const key of keys.keys) {
+        const video = await env.CONTENT_KV.get(key.name);
+        if (video) {
+          const data = JSON.parse(video);
+          if (data.processedAt > thirtyDaysAgo) recentVideos++;
+        }
+      }
+      
+      return new Response(JSON.stringify({
+        lastDiscovery: discovery,
+        recentVideosProcessed: recentVideos,
+        totalVideosInCache: keys.keys.length,
+        period: '30 days'
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // CACHE MANAGEMENT
+    router.post('/cache/clear', async (req, env) => {
+      const { pattern } = await req.json();
+      const list = await env.CONTENT_KV.list({ prefix: pattern || '' });
+      let deleted = 0;
+      
+      for (const key of list.keys) {
+        await env.CONTENT_KV.delete(key.name);
+        deleted++;
+      }
+      
+      return new Response(JSON.stringify({ 
+        cleared: deleted,
+        pattern: pattern || 'all'
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // SOCIAL MEDIA PREVIEW
+    router.get('/social/preview/:id', async (req, env, ctx) => {
+      const { id } = ctx.params;
+      const socialData = await env.CONTENT_KV.get(`social:${id}`);
+      
+      if (!socialData) {
+        return new Response('Social content not found', { status: 404 });
+      }
+      
+      return new Response(socialData, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    
+    // Handle the request
+    return router.handle(request, env);
+  },
+  
+  // QUEUE CONSUMER (for Cloudflare Queue integration)
+  async queue(batch, env, ctx) {
+    for (const message of batch.messages) {
+      const { type, data } = message.body;
+      
+      try {
+        switch(type) {
+          case 'crosspost':
+            await handleCrosspost(data, env);
+            break;
+          case 'enhance':
+            const enhanceAgent = new EnhancementAgent(env);
+            await enhanceAgent.start(data);
+            break;
+          case 'publish':
+            const publishAgent = new PublishingAgent(env);
+            await publishAgent.publish(data);
+            break;
+          case 'discover':
+            const discoverAgent = new DiscoveryAgent(env);
+            await discoverAgent.run();
+            break;
+        }
+        message.ack();
+      } catch (error) {
+        console.error(`Queue processing error [${type}]:`, error);
+        message.retry();
+      }
+    }
+  },
+  
+  // SCHEDULED TRIGGER (for cron jobs)
+  async scheduled(event, env, ctx) {
+    console.log('Scheduled event:', event.cron);
+    
+    switch(event.cron) {
+      case '0 */6 * * *': // Every 6 hours
+        const agent = new DiscoveryAgent(env);
+        await agent.run();
+        break;
+      case '0 9 * * 1': // Weekly on Monday 9am
+        await env.CONTENT_KV.delete('creator_cache');
+        console.log('Creator cache cleared for weekly refresh');
+        break;
+    }
+  }
+};
+
+// ========== HELPER FUNCTIONS ==========
+
+async function handleCrosspost(data, env) {
+  const { notionPageId, platforms } = data;
+  
+  const socialData = await env.CONTENT_KV.get(`social:${notionPageId}`);
+  if (!socialData) return new Response('No social content found', { status: 404 });
+  
+  const social = JSON.parse(socialData);
+  const results = {};
+  
+  for (const platform of platforms) {
+    try {
+      switch(platform) {
+        case 'medium':
+          results.medium = await postToMedium(social, env);
+          break;
+        case 'devto':
+          results.devto = await postToDevTo(social, env);
+          break;
+        case 'twitter':
+          results.twitter = await postToTwitter(social.twitter, env);
+          break;
+        case 'linkedin':
+          results.linkedin = await postToLinkedIn(social.linkedin, env);
+          break;
+      }
+    } catch (error) {
+      results[platform] = { error: error.message };
+    }
+  }
+  
+  return new Response(JSON.stringify(results), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function postToMedium(social, env) {
+  // Medium API integration placeholder
+  return { status: 'not_implemented' };
+}
+
+async function postToDevTo(social, env) {
+  const response = await fetch('https://dev.to/api/articles', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api-key': env.DEVTO_API_KEY
+    },
+    body: JSON.stringify({
+      article: {
+        title: social.devto?.title || social.title,
+        body_markdown: social.content || '',
+        tags: social.devto?.tags || [],
+        published: false
+      }
+    })
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Dev.to error: ${await response.text()}`);
+  }
+  
+  const data = await response.json();
+  return { url: data.url, id: data.id };
+}
+
+async function postToTwitter(thread, env) {
+  // Twitter/X API v2 integration placeholder
+  return { status: 'not_implemented', tweets: thread.split('\n\n').length };
+}
+
+async function postToLinkedIn(content, env) {
+  // LinkedIn API integration placeholder
+  return { status: 'not_implemented' };
+}
+
+async function handleNotification(data, env) {
+  // Send email/Slack notification
+  if (env.SLACK_WEBHOOK_URL) {
+    await fetch(env.SLACK_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: `📢 ${data.message}\n${data.url || ''}`
+      })
+    });
+  }
+  
+  return new Response('Notification sent', { status: 200 });
+}
+
+async function handleIndexing(data, env) {
+  // Submit to search engines
+  if (data.url && env.BING_API_KEY) {
+    await fetch('https://ssl.bing.com/webmaster/api.svc/json/SubmitUrlbatch?apikey=' + env.BING_API_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        siteUrl: 'https://techfusionreport.com',
+        urlList: [data.url]
+      })
+    });
+  }
+  
+  return new Response('Indexing requested', { status: 200 });
+}
