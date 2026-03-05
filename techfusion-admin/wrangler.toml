@@ -1,0 +1,11 @@
+name = "techfusion-admin"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "CONTENT_KV"
+id = "217f548642464439afa2b966a585e486"
+
+[vars]
+NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
+CREATOR_DATABASE_ID = "0403b4267a54467a8bfd7dfb2cc4a7a8"
