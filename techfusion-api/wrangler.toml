@@ -1,6 +1,6 @@
 name = "techfusion-api"
 main = "src/index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-03-01"
 
 [[kv_namespaces]]
 binding = "CONTENT_KV"
