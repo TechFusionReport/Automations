@@ -1,5 +1,5 @@
-name = "techfusion-admin"
-main = "src/admin.js"
+name = "techfusion-api"
+main = "src/index.js"
 compatibility_date = "2024-01-01"
 
 [[kv_namespaces]]
@@ -77,8 +77,8 @@ GEMINI_API_KEY = "AIzaSyCQXbux4xNvUcqvdMgsbi3YhRq8GlxcCfY"
 GITHUB_TOKEN = "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"
 
 
-
- 
+[triggers]
+crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *"]
 
 [triggers]
 crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *"]
