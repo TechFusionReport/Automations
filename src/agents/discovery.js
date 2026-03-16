@@ -1,76 +1,34 @@
-// ============================================================
-// TechFusion Report — Discovery Agent
-// Path: src/agents/discovery.js
-//
-// FIXES IN THIS VERSION:
-// 1. Type normalization — "YouTube Channel" in channels.json
-//    now correctly maps to the 'youtube' switch case
-// 2. writeToNotion — all property names now match
-//    Content Catalog v2 schema exactly (emoji prefixes,
-//    correct types: status vs select, multi_select for Source)
-// 3. Thumbnail URL auto-populated from YouTube video ID
-// 4. Video ID and Channel ID written to Notion
-// 5. Creator Name property removed (doesn't exist in v2)
-// 6. Status uses correct v2 value: "🟡 Pending Review"
-// ============================================================
+// Discovery Agent — TechFusion Report
+// Writes new records to Content Catalog v2 with correct schema properties
+// and the Option D (Dashboard + Brand Forward) template pre-applied at creation time.
 
 class DiscoveryAgent {
   constructor(env) {
     this.env = env;
     this.creatorCache = null;
-    this.config = null;
   }
 
-  // ── Normalize type strings from channels.json ──────────────
-  // channels.json uses "YouTube Channel", "RSS Feed", etc.
-  // The switch statement needs lowercase short forms.
-  normalizeType(rawType = '') {
-    const t = rawType.toLowerCase();
-    if (t.includes('youtube'))     return 'youtube';
-    if (t.includes('rss'))         return 'rss';
-    if (t.includes('github'))      return 'github';
-    if (t.includes('hackernews') || t.includes('hacker news')) return 'hackernews';
-    return t; // pass through if already normalized
-  }
-
-  // ── Config: load channel list from KV → GitHub → fallback ──
   async loadConfig() {
     const stored = await this.env.CONTENT_KV.get('channels_config');
-    if (stored) {
-      const channels = JSON.parse(stored);
-      console.log(`Loaded ${channels.length} channels from KV`);
-      return channels;
-    }
+    if (stored) return JSON.parse(stored);
 
-    try {
-      const response = await fetch(
-        'https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json'
-      );
-      if (response.ok) {
-        const channels = await response.json();
-        await this.env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
-        console.log(`Loaded ${channels.length} channels from GitHub`);
-        return channels;
+    return [
+      {
+        id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+        name: "Google Developers",
+        type: "youtube",
+        minScore: 75,
+        category: "AI Tools",
+        section: "Technology",
+        tags: ["Cloud", "api", "Back End"],
+        featured: false
       }
-    } catch (e) {
-      console.error('Failed to load channels from GitHub:', e);
-    }
-
-    console.warn('Using emergency fallback channel config');
-    return [{
-      id:       'UC_x5XG1OV2P6uZZ5FSM9Ttw',
-      name:     'Google Developers',
-      type:     'youtube',
-      minScore: 75,
-      category: 'Tech Reviews',
-      section:  'Technology',
-      tags:     ['cloud', 'api', 'performance'],
-      featured: false
-    }];
+    ];
   }
 
-  // ── Creator cache: Notion Content Creator DB → KV (24h) ────
-  async loadCreatorCache() {
+  // ─── Creator Cache ──────────────────────────────────────────────────────────
+
+  async loadCreatorCache(config) {
     if (this.creatorCache) return this.creatorCache;
 
     const cached = await this.env.CONTENT_KV.get('creator_cache');
@@ -79,24 +37,25 @@ class DiscoveryAgent {
       return this.creatorCache;
     }
 
+    console.log('Fetching creator cache from Notion...');
     const creators = [];
-    let cursor  = undefined;
+    let cursor = undefined;
     let hasMore = true;
 
     while (hasMore) {
-      const body = { page_size: 100 };
-      if (cursor) body.start_cursor = cursor;
+      const requestBody = { page_size: 100 };
+      if (cursor) requestBody.start_cursor = cursor;
 
       const response = await fetch(
-        `https://api.notion.com/v1/databases/${this.env.CREATOR_DATABASE_ID}/query`,
+        `https://api.notion.com/v1/databases/${config.creator_database_id}/query`,
         {
-          method:  'POST',
+          method: 'POST',
           headers: {
-            'Authorization':  `Bearer ${this.env.NOTION_TOKEN}`,
-            'Content-Type':   'application/json',
+            'Authorization': `Bearer ${config.notion_token}`,
+            'Content-Type': 'application/json',
             'Notion-Version': '2022-06-28'
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(requestBody)
         }
       );
 
@@ -111,33 +70,39 @@ class DiscoveryAgent {
         const channelId = this.extractChannelId(page);
         if (channelId) {
           creators.push({
-            id:        page.id,
-            channelId: channelId,
-            name:      page.properties.Name?.title?.[0]?.text?.content || 'Unknown'
+            id: page.id,
+            channelId,
+            name: page.properties.Name?.title?.[0]?.text?.content || 'Unknown',
+            url: page.url
           });
         }
       }
 
-      cursor  = data.next_cursor;
+      cursor = data.next_cursor;
       hasMore = data.has_more && cursor;
     }
 
     await this.env.CONTENT_KV.put('creator_cache', JSON.stringify(creators), {
       expirationTtl: 86400
     });
-
     this.creatorCache = creators;
     console.log(`Cached ${creators.length} creators`);
     return creators;
   }
 
   extractChannelId(page) {
-    const props = page.properties;
-    const names = ['Channel ID', 'channel_id', 'ChannelID', 'YouTube ID', 'YouTube', 'ID'];
-    for (const name of names) {
-      const prop = props[name];
-      if (prop?.rich_text?.[0]) return prop.rich_text[0].text.content.trim();
-      if (prop?.title?.[0])     return prop.title[0].text.content.trim();
+    const properties = page.properties;
+    const possibleNames = ['Channel ID', 'channel_id', 'ChannelID', 'YouTube ID', 'YouTube', 'ID'];
+
+    for (const name of possibleNames) {
+      const prop = properties[name];
+      if (!prop) continue;
+      if (prop.rich_text?.[0]) return prop.rich_text[0].text.content.trim();
+      if (prop.title?.[0]) return prop.title[0].text.content.trim();
+      if (prop.url) {
+        const match = prop.url.match(/channel\/(UC[\w-]+)/);
+        return match ? match[1] : prop.url;
+      }
     }
     return null;
   }
@@ -148,56 +113,53 @@ class DiscoveryAgent {
     console.log('Creator cache invalidated');
   }
 
-  // ── Main run loop ───────────────────────────────────────────
-  async run() {
-    this.config = {
-      notion_token:        this.env.NOTION_TOKEN,
-      notion_database_id:  this.env.NOTION_DATABASE_ID,
-      creator_database_id: this.env.CREATOR_DATABASE_ID,
-      youtube_api_key:     this.env.YOUTUBE_API_KEY,
-      gemini_api_key:      this.env.GEMINI_API_KEY
-    };
+  // ─── Main Run ───────────────────────────────────────────────────────────────
 
+  async run() {
+    const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const channels = await this.loadConfig();
-    await this.loadCreatorCache();
+
+    await this.loadCreatorCache(config);
 
     const results = {
-      total:     channels.length,
-      processed: 0,
-      approved:  0,
-      byType:    {},
-      errors:    []
+      youtube: 0,
+      rss: 0,
+      github: 0,
+      hackernews: 0,
+      approved: 0,
+      errors: []
     };
 
     for (const channel of channels) {
       try {
-        // ✅ Normalize type so "YouTube Channel" hits the right case
-        const type = this.normalizeType(channel.type);
-        console.log(`Processing: ${channel.name} [${type}]`);
+        console.log(`Processing: ${channel.name} [${channel.type}]`);
 
-        let channelResult = { processed: 0, approved: 0 };
-
-        switch (type) {
-          case 'youtube':
-            channelResult = await this.processYouTube(channel);
+        switch (channel.type) {
+          case 'youtube': {
+            const r = await this.processYouTube(channel, config);
+            results.youtube += r.processed;
+            results.approved += r.approved;
             break;
-          case 'rss':
-            channelResult = await this.processRSS(channel);
+          }
+          case 'rss': {
+            const r = await this.processRSS(channel, config);
+            results.rss += r.processed;
+            results.approved += r.approved;
             break;
-          case 'github':
-            channelResult = await this.processGitHub(channel);
+          }
+          case 'github': {
+            const r = await this.processGitHub(channel, config);
+            results.github += r.processed;
+            results.approved += r.approved;
             break;
-          case 'hackernews':
-            channelResult = await this.processHackerNews(channel);
+          }
+          case 'hackernews': {
+            const r = await this.processHackerNews(channel, config);
+            results.hackernews += r.processed;
+            results.approved += r.approved;
             break;
-          default:
-            console.warn(`Unknown channel type "${type}" for ${channel.name} — skipping`);
+          }
         }
-
-        results.processed               += channelResult.processed;
-        results.approved                += channelResult.approved;
-        results.byType[type]             = (results.byType[type] || 0) + channelResult.processed;
-
       } catch (error) {
         console.error(`Error processing ${channel.name}:`, error);
         results.errors.push({ channel: channel.name, error: error.message });
@@ -209,36 +171,24 @@ class DiscoveryAgent {
       results
     }));
 
-    return new Response(JSON.stringify(results, null, 2), {
+    return new Response(JSON.stringify(results), {
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  // ── YouTube processor ───────────────────────────────────────
-  async processYouTube(channel) {
-    const url =
-      `https://www.googleapis.com/youtube/v3/search` +
-      `?part=snippet` +
-      `&channelId=${channel.id}` +
-      `&maxResults=5` +
-      `&order=date` +
-      `&type=video` +
-      `&key=${this.config.youtube_api_key}`;
+  // ─── Source Processors ──────────────────────────────────────────────────────
 
+  async processYouTube(channel, config) {
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${config.youtube_api_key}`;
     const response = await fetch(url);
-    const data     = await response.json();
-
-    if (data.error) {
-      throw new Error(`YouTube API error: ${data.error.message}`);
-    }
+    const data = await response.json();
 
     let processed = 0;
-    let approved  = 0;
+    let approved = 0;
 
     for (const item of data.items || []) {
       const videoId = item.id.videoId;
 
-      // Skip if already in KV cache (processed in last 30 days)
       const exists = await this.env.CONTENT_KV.get(`video:${videoId}`);
       if (exists) continue;
 
@@ -248,29 +198,28 @@ class DiscoveryAgent {
         channel.category
       );
 
-      // Mark as processed to avoid duplicates
       await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({
-        title:       item.snippet.title,
-        channel:     channel.name,
+        title: item.snippet.title,
+        channel: channel.name,
         score,
         processedAt: Date.now()
-      }), { expirationTtl: 2592000 }); // 30 days
+      }), { expirationTtl: 2592000 });
 
       processed++;
 
-      if (score >= (channel.minScore || 70)) {
+      if (score > (channel.minScore || 70)) {
         await this.writeToNotion({
-          id:           videoId,
-          title:        item.snippet.title,
-          description:  item.snippet.description,
-          url:          `https://youtube.com/watch?v=${videoId}`,
-          // ✅ Thumbnail from YouTube's CDN — no extra API call needed
-          thumbnail:    `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-          channelId:    channel.id,
+          id: videoId,
+          title: item.snippet.title,
+          description: item.snippet.description,
+          url: `https://youtube.com/watch?v=${videoId}`,
+          thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          channelId: channel.id,
           channelTitle: item.snippet.channelTitle,
-          publishedAt:  item.snippet.publishedAt,
+          publishedAt: item.snippet.publishedAt,
           score
-        }, channel);
+        }, channel, config);
+
         approved++;
       }
     }
@@ -278,48 +227,43 @@ class DiscoveryAgent {
     return { processed, approved };
   }
 
-  // ── RSS processor (stub — ready to implement) ───────────────
-  async processRSS(channel) {
-    // TODO: fetch channel.url, parse XML, score, writeToNotion
-    console.log(`RSS not yet implemented for: ${channel.name}`);
+  async processRSS(channel, config) {
+    // RSS feed processing — to be implemented
     return { processed: 0, approved: 0 };
   }
 
-  // ── GitHub releases processor (stub) ───────────────────────
-  async processGitHub(channel) {
-    // TODO: fetch https://api.github.com/repos/{owner}/{repo}/releases
-    console.log(`GitHub not yet implemented for: ${channel.name}`);
+  async processGitHub(channel, config) {
+    // GitHub releases processing — to be implemented
     return { processed: 0, approved: 0 };
   }
 
-  // ── Hacker News processor (stub) ───────────────────────────
-  async processHackerNews(channel) {
-    // TODO: fetch https://hacker-news.firebaseio.com/v0/topstories.json
-    console.log(`HackerNews not yet implemented for: ${channel.name}`);
+  async processHackerNews(channel, config) {
+    // HackerNews processing — to be implemented
     return { processed: 0, approved: 0 };
   }
 
-  // ── Gemini scoring ──────────────────────────────────────────
+  // ─── AI Scoring ─────────────────────────────────────────────────────────────
+
   async scoreContent(title, description, category) {
-    const prompt =
-      `Score this YouTube video 0-100 for relevance to a "${category}" tech blog.\n` +
-      `Title: "${title}"\n` +
-      `Description: "${(description || '').substring(0, 500)}"\n\n` +
-      `Consider: technical depth, tutorial value, evergreen appeal, audience interest.\n` +
-      `Return only the number, nothing else.`;
+    const prompt = `Score 0-100 for ${category} tech blog relevance.
+Title: "${title}"
+Description: "${description?.substring(0, 500)}"
+
+Consider: technical depth, tutorial potential, evergreen value, audience interest.
+Return only the number.`;
 
     try {
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent` +
-        `?key=${this.config.gemini_api_key}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`,
         {
-          method:  'POST',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
-      const data  = await response.json();
-      const text  = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
       const match = text.match(/\d+/);
       return match ? parseInt(match[0]) : 50;
     } catch (error) {
@@ -328,92 +272,317 @@ class DiscoveryAgent {
     }
   }
 
-  // ── Write to Content Catalog v2 ─────────────────────────────
-  // ✅ All property names and types match Content Catalog v2 schema
-  async writeToNotion(video, channel) {
-    const creator = this.creatorCache?.find(c => c.channelId === channel.id);
+  // ─── Template Builder ────────────────────────────────────────────────────────
+  // Builds the Option D (Dashboard + Brand Forward) block structure.
+  // These blocks are passed as `children` in the page creation call so every
+  // new record lands pre-formatted — no separate stamper step required.
 
-    // Map channel.section to the exact Notion select option values
-    // v2 Section options: "Entertainment" | "Productivity" | "Technology"
-    const sectionMap = {
-      'technology':   'Technology',
-      'productivity': 'Productivity',
-      'entertainment':'Entertainment'
-    };
-    const section = sectionMap[(channel.section || '').toLowerCase()] || 'Technology';
+  buildTemplateBlocks(video, channel, dateAdded) {
+    const t = (text, bold = false, color = 'default') => ({
+      type: 'text',
+      text: { content: text },
+      annotations: { bold, color }
+    });
 
-    // Published date — strip time component for Notion date field
-    const publishedDate = video.publishedAt
-      ? video.publishedAt.split('T')[0]
-      : new Date().toISOString().split('T')[0];
+    return [
+      // ── TFR Branded Header ──────────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'callout',
+        callout: {
+          rich_text: [
+            t('⚡ TECHFUSION REPORT\n', true),
+            t('Technology · Entertainment · Productivity\n', false, 'gray'),
+            t(`${channel.category}`, false, 'blue'),
+            t(` · ${channel.name} · ${dateAdded}`, false, 'gray')
+          ],
+          icon: { emoji: '⚡' },
+          color: 'gray_background'
+        }
+      },
 
+      // ── Pipeline Status Banner ──────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'callout',
+        callout: {
+          rich_text: [
+            t('🟡 PIPELINE STATUS: ', true),
+            t('🟡 Pending Review', false, 'yellow'),
+            t(`   ·   Added ${dateAdded}`, false, 'gray')
+          ],
+          icon: { emoji: '🟡' },
+          color: 'yellow_background'
+        }
+      },
+
+      { object: 'block', type: 'divider', divider: {} },
+
+      // ── Two-Column: Embed + Record Info ─────────────────────────────────────
+      {
+        object: 'block',
+        type: 'column_list',
+        column_list: {
+          children: [
+            // Left: YouTube embed
+            {
+              object: 'block',
+              type: 'column',
+              column: {
+                children: [
+                  {
+                    object: 'block',
+                    type: 'embed',
+                    embed: { url: video.url }
+                  }
+                ]
+              }
+            },
+            // Right: Record info callout
+            {
+              object: 'block',
+              type: 'column',
+              column: {
+                children: [
+                  {
+                    object: 'block',
+                    type: 'callout',
+                    callout: {
+                      rich_text: [
+                        t('📊 RECORD INFO\n', true),
+                        t('Channel: ', true), t(`${channel.name}\n`),
+                        t('Section: ', true), t(`${channel.section}\n`),
+                        t('Category: ', true), t(`${channel.category}\n`),
+                        t('Source: ', true), t('YouTube\n'),
+                        t('Added: ', true), t(`${dateAdded}\n`),
+                        t('Tags: ', true),
+                        t((channel.tags || []).map(tag => `${tag}`).join('  '))
+                      ],
+                      icon: { emoji: '📊' },
+                      color: 'blue_background'
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+
+      { object: 'block', type: 'divider', divider: {} },
+
+      // ── Gemini AI Brief ─────────────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'callout',
+        callout: {
+          rich_text: [
+            t('🤖 GEMINI — AI BRIEF\n', true),
+            t('2–3 sentence summary populates here when the Enhancement agent runs. Key points, main takeaways, standout moments.', false, 'gray')
+          ],
+          icon: { emoji: '🤖' },
+          color: 'purple_background'
+        }
+      },
+
+      { object: 'block', type: 'divider', divider: {} },
+
+      // ── TFR Blog Draft (toggle) ─────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'toggle',
+        toggle: {
+          rich_text: [t('⚡ TFR BLOG DRAFT', true)],
+          children: [
+            {
+              object: 'block',
+              type: 'paragraph',
+              paragraph: {
+                rich_text: [t('Full Gemini-generated blog post populates here after transcription is approved.', false, 'gray')]
+              }
+            }
+          ]
+        }
+      },
+
+      // ── Short Form (toggle) ─────────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'toggle',
+        toggle: {
+          rich_text: [t('✂️ SHORT FORM', true)],
+          children: [
+            {
+              object: 'block',
+              type: 'paragraph',
+              paragraph: { rich_text: [t('Short-form content populates here.', false, 'gray')] }
+            }
+          ]
+        }
+      },
+
+      // ── Social Copy Panel (toggle) ──────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'toggle',
+        toggle: {
+          rich_text: [t('📲 SOCIAL COPY PANEL', true)],
+          children: [
+            {
+              object: 'block',
+              type: 'callout',
+              callout: {
+                rich_text: [
+                  t('𝕏 / Twitter\n', true),
+                  t('...\n\n', false, 'gray'),
+                  t('Instagram\n', true),
+                  t('...\n\n', false, 'gray'),
+                  t('Reddit\n', true),
+                  t('...\n\n', false, 'gray'),
+                  t('LinkedIn\n', true),
+                  t('...', false, 'gray')
+                ],
+                icon: { emoji: '📲' },
+                color: 'green_background'
+              }
+            }
+          ]
+        }
+      },
+
+      // ── SEO & Discoverability (toggle) ──────────────────────────────────────
+      {
+        object: 'block',
+        type: 'toggle',
+        toggle: {
+          rich_text: [t('🔍 SEO & DISCOVERABILITY', true)],
+          children: [
+            {
+              object: 'block',
+              type: 'callout',
+              callout: {
+                rich_text: [
+                  t('Slug: ', true), t('—\n', false, 'gray'),
+                  t('Meta Description: ', true), t('...\n', false, 'gray'),
+                  t('Focus Keywords: ', true), t('...\n', false, 'gray'),
+                  t('Internal Links: ', true), t('Gemini-suggested internal links based on Category + Tags match.', false, 'gray')
+                ],
+                icon: { emoji: '🔍' },
+                color: 'orange_background'
+              }
+            }
+          ]
+        }
+      },
+
+      { object: 'block', type: 'divider', divider: {} },
+
+      // ── Pre-Publish Checklist ───────────────────────────────────────────────
+      {
+        object: 'block',
+        type: 'callout',
+        callout: {
+          rich_text: [t('✅ READY TO PUBLISH?', true)],
+          icon: { emoji: '✅' },
+          color: 'green_background',
+          children: [
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('Thumbnail confirmed')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('YouTube embed working')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('SEO slug set')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('Category & Section tagged')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('Short form ready')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('Blog draft reviewed & approved')], checked: false } },
+            { object: 'block', type: 'to_do', to_do: { rich_text: [t('Related posts linked')], checked: false } }
+          ]
+        }
+      }
+    ];
+  }
+
+  // ─── Write to Notion ─────────────────────────────────────────────────────────
+  // Uses correct Content Catalog v2 property names from the actual schema.
+  // Template blocks are passed as `children` — no separate apply step needed.
+
+  async writeToNotion(video, channel, config) {
+    const creators = await this.loadCreatorCache(config);
+    const creator = creators.find(c => c.channelId === channel.id);
+
+    console.log(`Writing to Notion: ${video.title}`);
+    if (creator) console.log(`Creator match: ${creator.name}`);
+
+    const dateAdded = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+    // ── Properties (matching v2 schema exactly) ──────────────────────────────
     const properties = {
-      // ── Title (title type) ──────────────────────────────────
+      // Title (title property)
       'Title': {
         title: [{ text: { content: video.title } }]
       },
-
-      // ── Core video fields ───────────────────────────────────
-      '🎬 Video URL': {
-        url: video.url
-      },
+      // Video URL
+      '🎬 Video URL': { url: video.url },
+      // Video ID
       '🆔 Video ID': {
         rich_text: [{ text: { content: video.id } }]
       },
-      '🖼️ Thumbnail': {
-        url: video.thumbnail
-      },
+      // Channel ID
       '📺 Channel ID': {
-        rich_text: [{ text: { content: video.channelId } }]
+        rich_text: [{ text: { content: channel.id } }]
       },
-      '📅 Published Date': {
-        date: { start: publishedDate }
+      // Thumbnail
+      '🖼️ Thumbnail': {
+        url: video.thumbnail || `https://img.youtube.com/vi/${video.id}/maxresdefault.jpg`
       },
-
-      // ── Status (status type, not select) ───────────────────
-      // v2 value: "🟡 Pending Review"
+      // Status (status type — not select)
       'Status': {
         status: { name: '🟡 Pending Review' }
       },
-
-      // ── Categorization ──────────────────────────────────────
+      // Category (select)
+      '🗂️ Category': {
+        select: { name: channel.category }
+      },
+      // Section (select)
       '🗂️ Section': {
-        select: { name: section }
+        select: { name: channel.section }
       },
-
-      // ── Source (multi_select in v2, not select) ─────────────
-      'Source': {
-        multi_select: [{ name: 'YouTube' }]
-      },
-
-      // ── Tags (multi_select) ─────────────────────────────────
+      // Tags (multi_select)
       '🔖 Tags': {
         multi_select: (channel.tags || []).map(tag => ({ name: tag }))
       },
-
-      // ── Featured (checkbox) ─────────────────────────────────
+      // Featured (checkbox)
       'Featured': {
-        checkbox: channel.featured === true
+        checkbox: channel.featured || false
+      },
+      // Source (multi_select — not select)
+      'Source': {
+        multi_select: [{ name: 'RSS' }]
+      },
+      // Date Added
+      '📅 Date Added': {
+        date: { start: dateAdded }
       }
     };
 
-    // ── Content Creator relation (if found in cache) ──────────
+    // Content Creator relation
     if (creator) {
       properties['Content Creator'] = {
         relation: [{ id: creator.id }]
       };
     }
 
+    // ── Page Creation with Template Blocks ───────────────────────────────────
     const payload = {
-      parent:     { database_id: this.config.notion_database_id },
-      properties: properties
+      parent: {
+        database_id: config.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7'
+      },
+      properties,
+      children: this.buildTemplateBlocks(video, channel, dateAdded)
     };
 
     const response = await fetch('https://api.notion.com/v1/pages', {
-      method:  'POST',
+      method: 'POST',
       headers: {
-        'Authorization':  `Bearer ${this.config.notion_token}`,
-        'Content-Type':   'application/json',
+        'Authorization': `Bearer ${config.notion_token}`,
+        'Content-Type': 'application/json',
         'Notion-Version': '2022-06-28'
       },
       body: JSON.stringify(payload)
@@ -424,10 +593,10 @@ class DiscoveryAgent {
       throw new Error(`Notion API error: ${error}`);
     }
 
-    const result = await response.json();
-    console.log(`✅ Written to Notion: "${video.title}" (${creator ? creator.name : 'no creator match'})`);
-    return result;
+    const page = await response.json();
+    console.log(`Created Notion page: ${page.id}`);
+    return page;
   }
 }
 
-export { DiscoveryAgent };
+export default DiscoveryAgent;
