@@ -1,10 +1,8 @@
 // Enhancement Poller — TechFusion Report
-// Runs on a cron schedule. Queries Content Catalog v2 for records where:
-//   Status = "Ready to Enhance"
-// For each match, fires the EnhancementAgent.
-//
-// runSingle(pageId) — for manual trigger via /admin/enhance-poll endpoint
-// run()             — called by the 30-min cron sweep
+// Queries Content Catalog v2 every 30 min for records where:
+//   Status = "🟡 Pending Review"
+// Marks as "In Progress" immediately to prevent double-processing,
+// then fires the EnhancementAgent. On completion sets "Draft Generated".
 
 import { EnhancementOrchestrator as EnhancementAgent } from './enhancement.js';
 
@@ -31,19 +29,10 @@ export class EnhancementPoller {
     if (!pageRes.ok) throw new Error(`Failed to fetch page ${pageId}: ${await pageRes.text()}`);
 
     const page = await pageRes.json();
-    const props = page.properties || {};
-
-    const agent = new EnhancementAgent(this.env);
-    return await agent.start({
-      notionPageId: pageId,
-      videoUrl: props['🎬 Video URL']?.url,
-      category: props['🗂️ Category']?.select?.name,
-      section:  props['🗂️ Section']?.select?.name,
-      tags:     props['🔖 Tags']?.multi_select?.map(t => t.name) || []
-    });
+    return await this.enhancePage(page, token);
   }
 
-  // ─── Sweep all records ready to enhance ─────────────────────────────────
+  // ─── Sweep all records pending enhancement ───────────────────────────────
 
   async run() {
     const secrets    = await this.getSecrets();
@@ -62,10 +51,10 @@ export class EnhancementPoller {
           'Notion-Version': '2022-06-28'
         },
         body: JSON.stringify({
-          page_size: 5, // keep batches small — enhancement is Gemini-heavy
+          page_size: 5, // small batches — enhancement is Gemini-heavy
           filter: {
             property: 'Status',
-            status: { equals: 'Ready to Enhance' }
+            status: { equals: '🟡 Pending Review' }
           }
         })
       }
@@ -79,7 +68,7 @@ export class EnhancementPoller {
     const data    = await response.json();
     const records = data.results || [];
 
-    console.log(`Enhancement Poller: found ${records.length} records ready to enhance`);
+    console.log(`Enhancement Poller: found ${records.length} records to enhance`);
 
     if (records.length === 0) {
       await this.env.CONTENT_KV.put('last_enhance_poll', JSON.stringify({
@@ -89,35 +78,24 @@ export class EnhancementPoller {
     }
 
     const results = { processed: 0, errors: [] };
-    const agent   = new EnhancementAgent(this.env);
 
     for (const record of records) {
       const pageId = record.id;
       const title  = record.properties?.Title?.title?.[0]?.text?.content || pageId;
-      const props  = record.properties || {};
 
       try {
         console.log(`Enhancement Poller: enhancing "${title}"`);
 
-        // Mark as In Progress immediately to prevent double-processing
-        await this.setStatus(pageId, 'In Progress', token);
+        // Mark In Progress immediately to prevent double-processing on next poll
+        await this.setStatus(pageId, 'In progress', token);
 
-        await agent.start({
-          notionPageId: pageId,
-          videoUrl: props['🎬 Video URL']?.url,
-          category: props['🗂️ Category']?.select?.name,
-          section:  props['🗂️ Section']?.select?.name,
-          tags:     props['🔖 Tags']?.multi_select?.map(t => t.name) || []
-        });
-
+        await this.enhancePage(record, token);
         results.processed++;
         console.log(`Enhancement Poller: ✅ enhanced "${title}"`);
 
       } catch (error) {
         console.error(`Enhancement Poller: error on "${title}":`, error);
         results.errors.push({ pageId, title, error: error.message });
-
-        // Write error back and reset status
         await this.writeError(pageId, error.message, token);
       }
     }
@@ -129,6 +107,26 @@ export class EnhancementPoller {
     }));
 
     return results;
+  }
+
+  // ─── Core enhance logic ──────────────────────────────────────────────────
+
+  async enhancePage(page, token) {
+    const pageId = page.id;
+    const props  = page.properties || {};
+
+    const agent = new EnhancementAgent(this.env);
+    const result = await agent.start({
+      notionPageId: pageId,
+      videoUrl: props['🎬 Video URL']?.url,
+      category: props['🗂️ Category']?.select?.name,
+      section:  props['🗂️ Section']?.select?.name,
+      tags:     props['🔖 Tags']?.multi_select?.map(t => t.name) || []
+    });
+
+    // Mark as Draft Generated on success
+    await this.setStatus(pageId, 'Draft Generated', token);
+    return result;
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -157,7 +155,7 @@ export class EnhancementPoller {
       },
       body: JSON.stringify({
         properties: {
-          'Status':        { status: { name: '❌ Enhancement Failed' } },
+          'Status':        { status: { name: '❌ Errors' } },
           '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
         }
       })
