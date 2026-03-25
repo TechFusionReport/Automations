@@ -36,4 +36,4 @@ max_batch_timeout = 30
 NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
 
 [triggers]
-crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *"]
+crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *", "*/30 * * * *"]
