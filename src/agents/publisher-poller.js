@@ -62,10 +62,9 @@ export class PublisherPoller {
         body: JSON.stringify({
           page_size: 10,
           filter: {
-            and: [
-              { property: '🚀 Publish to GitHub', checkbox: { equals: true } },
-              { property: '✅ Published To Github', checkbox: { equals: false } }
-            ]
+            property: 'Status',
+            status: { equals: '🟡 Pending Review' }
+}           ]
           }
         })
       }
