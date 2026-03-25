@@ -1,11 +1,8 @@
 // Publisher Poller — TechFusion Report
-// Runs on a cron schedule AND via manual trigger.
-// Queries Content Catalog v2 for records where:
-//   🚀 Publish to GitHub = true AND ✅ Published To Github = false
-// For each match, reads the blog draft and fires the PublishingAgent.
-//
-// runSingle(pageId) — for manual trigger via /admin/publish-single endpoint
-// run()             — called by the 30-min cron sweep
+// Queries Content Catalog v2 every 30 min for records where:
+//   Status = "🚀 Publish Approved"
+// Reads the blog draft and fires the PublishingAgent.
+// On success sets Status = "✨ Published to Github".
 
 import { PublishingAgent } from './publishing.js';
 
@@ -26,29 +23,23 @@ export class PublisherPoller {
     const token   = secrets.notion_token || this.env.NOTION_TOKEN;
 
     const pageRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Notion-Version': '2022-06-28'
-      }
+      headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
     });
 
-    if (!pageRes.ok) {
-      const err = await pageRes.text();
-      throw new Error(`Failed to fetch page ${pageId}: ${err}`);
-    }
+    if (!pageRes.ok) throw new Error(`Failed to fetch page ${pageId}: ${await pageRes.text()}`);
 
     const page = await pageRes.json();
     return await this.publishPage(page, token, secrets);
   }
 
-  // ─── Sweep all unpublished records ──────────────────────────────────────
+  // ─── Sweep all records approved for publishing ───────────────────────────
 
   async run() {
-    const secrets     = await this.getSecrets();
-    const token       = secrets.notion_token || this.env.NOTION_TOKEN;
-    const databaseId  = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
+    const secrets    = await this.getSecrets();
+    const token      = secrets.notion_token || this.env.NOTION_TOKEN;
+    const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
 
-    console.log('Publisher Poller: checking for records ready to publish...');
+    console.log('Publisher Poller: checking for records approved to publish...');
 
     const response = await fetch(
       `https://api.notion.com/v1/databases/${databaseId}/query`,
@@ -63,8 +54,7 @@ export class PublisherPoller {
           page_size: 10,
           filter: {
             property: 'Status',
-            status: { equals: '🟡 Pending Review' }
-}           ]
+            status: { equals: '🚀 Publish Approved' }
           }
         })
       }
@@ -78,14 +68,11 @@ export class PublisherPoller {
     const data    = await response.json();
     const records = data.results || [];
 
-    console.log(`Publisher Poller: found ${records.length} records ready to publish`);
+    console.log(`Publisher Poller: found ${records.length} records to publish`);
 
     if (records.length === 0) {
       await this.env.CONTENT_KV.put('last_publish_poll', JSON.stringify({
-        timestamp: new Date().toISOString(),
-        found: 0,
-        processed: 0,
-        errors: []
+        timestamp: new Date().toISOString(), found: 0, processed: 0, errors: []
       }));
       return { processed: 0, errors: [] };
     }
@@ -113,50 +100,40 @@ export class PublisherPoller {
     return results;
   }
 
-  // ─── Core publish logic for a single page ───────────────────────────────
+  // ─── Core publish logic ──────────────────────────────────────────────────
 
   async publishPage(page, token, secrets) {
-    const pageId  = page.id;
-    const props   = page.properties || {};
-    const title   = props?.Title?.title?.[0]?.text?.content || 'Untitled';
+    const pageId = page.id;
+    const props  = page.properties || {};
+    const title  = props?.Title?.title?.[0]?.text?.content || 'Untitled';
 
     console.log(`Publisher Poller: publishing "${title}" (${pageId})`);
 
     const content = await this.readBlogDraft(pageId, token);
-
-    if (!content) {
-      throw new Error('No blog draft content found — run Enhancement agent first');
-    }
-
-    const category  = props['🗂️ Category']?.select?.name  || 'General';
-    const section   = props['🗂️ Section']?.select?.name   || 'Technology';
-    const tags      = props['🔖 Tags']?.multi_select?.map(t => t.name) || [];
-    const featured  = props.Featured?.checkbox             || false;
-    const videoUrl  = props['🎬 Video URL']?.url           || null;
-    const thumbnail = props['🖼️ Thumbnail']?.url          || null;
+    if (!content) throw new Error('No blog draft found — run Enhancement agent first');
 
     const agent = new PublishingAgent(this.env);
     const result = await agent.publish({
       notionPageId: pageId,
       title,
       content,
-      category,
-      section,
-      tags,
-      featured,
-      videoUrl,
-      thumbnail
+      category:  props['🗂️ Category']?.select?.name  || 'General',
+      section:   props['🗂️ Section']?.select?.name   || 'Technology',
+      tags:      props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
+      featured:  props.Featured?.checkbox             || false,
+      videoUrl:  props['🎬 Video URL']?.url           || null,
+      thumbnail: props['🖼️ Thumbnail']?.url          || null
     });
 
     console.log(`Publisher Poller: ✅ published "${title}"`);
     return result;
   }
 
-  // ─── Read Blog Draft from Page Blocks ───────────────────────────────────
-  // Tries the ⚡ TFR BLOG DRAFT toggle first, falls back to 📝 Blog Draft property.
+  // ─── Read Blog Draft ─────────────────────────────────────────────────────
+  // Tries the ⚡ TFR BLOG DRAFT toggle block first,
+  // falls back to 📝 Blog Draft property.
 
   async readBlogDraft(pageId, token) {
-    // 1. Try the template toggle block
     const blocksRes = await fetch(
       `https://api.notion.com/v1/blocks/${pageId}/children?page_size=50`,
       { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
@@ -164,25 +141,20 @@ export class PublisherPoller {
 
     if (blocksRes.ok) {
       const blocks = await blocksRes.json();
-
       for (const block of blocks.results || []) {
         if (block.type === 'toggle') {
           const label = block.toggle?.rich_text?.[0]?.text?.content || '';
           if (label.includes('TFR BLOG DRAFT') || label.includes('BLOG DRAFT')) {
-
             const childRes = await fetch(
               `https://api.notion.com/v1/blocks/${block.id}/children`,
               { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
             );
-
             if (childRes.ok) {
               const children = await childRes.json();
               const content = (children.results || [])
                 .filter(b => b.type === 'paragraph')
                 .map(b => b.paragraph?.rich_text?.map(r => r.text?.content || '').join('') || '')
-                .join('\n\n')
-                .trim();
-
+                .join('\n\n').trim();
               if (content) return content;
             }
           }
@@ -190,12 +162,11 @@ export class PublisherPoller {
       }
     }
 
-    // 2. Fallback: read from 📝 Blog Draft property
+    // Fallback: 📝 Blog Draft property
     const pageRes = await fetch(
       `https://api.notion.com/v1/pages/${pageId}`,
       { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
     );
-
     if (pageRes.ok) {
       const page = await pageRes.json();
       const draft = page.properties?.['📝 Blog Draft']?.rich_text
@@ -206,7 +177,7 @@ export class PublisherPoller {
     return null;
   }
 
-  // ─── Write error back to Notion record ──────────────────────────────────
+  // ─── Write error back to Notion ──────────────────────────────────────────
 
   async writeError(pageId, errorMessage, token) {
     await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
@@ -218,7 +189,7 @@ export class PublisherPoller {
       },
       body: JSON.stringify({
         properties: {
-          'Status':        { status: { name: '❌ Publish Failed' } },
+          'Status':        { status: { name: '❌ Errors' } },
           '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
         }
       })
