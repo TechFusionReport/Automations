@@ -1,6 +1,18 @@
 // Discovery Agent — TechFusion Report
+// v6.0.0 — Channels sourced from Creator DB (Notion) instead of channels.json / KV
 // Writes new records to Content Catalog v2 with correct schema properties
 // and the Option D (Dashboard + Brand Forward) template pre-applied at creation time.
+
+// ─── Content Type → Section/Category Mapping ────────────────────────────────
+const CONTENT_TYPE_MAP = {
+  '|| Tech ||':           { section: 'Technology',     category: 'Technology' },
+  '|| Entertainment ||':  { section: 'Entertainment',  category: 'Entertainment' },
+  'Productivity':         { section: 'Productivity',   category: 'Productivity' },
+  'SmartPhone (GK)':      { section: 'Technology',     category: 'Mobile' },
+  'Movies':               { section: 'Entertainment',  category: 'Movies' },
+};
+
+const DEFAULT_SECTION_CATEGORY = { section: 'Technology', category: 'Technology' };
 
 class DiscoveryAgent {
   constructor(env) {
@@ -8,26 +20,111 @@ class DiscoveryAgent {
     this.creatorCache = null;
   }
 
-  async loadConfig() {
-    const stored = await this.env.CONTENT_KV.get('channels_config');
-    if (stored) return JSON.parse(stored);
+  // ─── Load Channels from Creator DB ────────────────────────────────────────
+  // Replaces the old loadConfig() / channels.json approach.
+  // Queries Notion Creator DB, filters for Active = true, and maps records
+  // to the channel shape used throughout the rest of the agent.
+  async loadChannelsFromCreatorDB(config) {
+    // Check KV cache first (5-min TTL so cron runs stay fast)
+    const cached = await this.env.CONTENT_KV.get('creator_db_channels');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      console.log(`Loaded ${parsed.length} channels from KV cache (Creator DB)`);
+      return parsed;
+    }
 
-    return [
-      {
-        id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
-        name: "Google Developers",
-        type: "youtube",
-        minScore: 75,
-        category: "AI Tools",
-        section: "Technology",
-        tags: ["Cloud", "api", "Back End"],
-        featured: false
+    console.log('Fetching active channels from Creator DB...');
+    const channels = [];
+    let cursor = undefined;
+    let hasMore = true;
+
+    const creatorDbId = config.creator_database_id || '0403b4267a54467a8bfd7dfb2cc4a7a8';
+
+    while (hasMore) {
+      const requestBody = {
+        page_size: 100,
+        filter: {
+          property: 'Active',
+          checkbox: { equals: true }
+        }
+      };
+      if (cursor) requestBody.start_cursor = cursor;
+
+      const response = await fetch(
+        `https://api.notion.com/v1/databases/${creatorDbId}/query`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${config.notion_token}`,
+            'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28'
+          },
+          body: JSON.stringify(requestBody)
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error('Failed to fetch Creator DB:', err);
+        break;
       }
-    ];
+
+      const data = await response.json();
+
+      for (const page of data.results) {
+        const channel = this.mapCreatorPageToChannel(page);
+        if (channel) channels.push(channel);
+      }
+
+      cursor = data.next_cursor;
+      hasMore = data.has_more && !!cursor;
+    }
+
+    // Cache for 5 minutes so repeated cron triggers don't hammer Notion
+    await this.env.CONTENT_KV.put('creator_db_channels', JSON.stringify(channels), {
+      expirationTtl: 300
+    });
+
+    console.log(`Loaded ${channels.length} active channels from Creator DB`);
+    return channels;
   }
 
-  // ─── Creator Cache ──────────────────────────────────────────────────────────
+  // Maps a single Notion Creator DB page to the internal channel shape
+  mapCreatorPageToChannel(page) {
+    const props = page.properties;
 
+    // Channel ID — required; skip record if missing
+    const channelId = props['Channel ID']?.rich_text?.[0]?.text?.content?.trim();
+    if (!channelId) return null;
+
+    // Name from title property
+    const name = props['Content Creators']?.title?.[0]?.text?.content || 'Unknown';
+
+    // Section + category from Content Type multi_select (use first value)
+    const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
+    const primaryType = contentTypes[0] || null;
+    const { section, category } = CONTENT_TYPE_MAP[primaryType] || DEFAULT_SECTION_CATEGORY;
+
+    // Tags from Tags multi_select
+    const tags = props['Tags']?.multi_select?.map(t => t.name) || [];
+
+    // Auto-Approve lowers the min score threshold to 50 (always passes scoring)
+    const autoApprove = props['Auto-Approve']?.checkbox === true;
+
+    return {
+      id: channelId,
+      notionPageId: page.id,
+      name,
+      type: 'youtube',
+      minScore: autoApprove ? 0 : 70,
+      category,
+      section,
+      tags,
+      featured: false
+    };
+  }
+
+  // ─── Creator Cache (for relation linking when writing to Content Catalog) ──
   async loadCreatorCache(config) {
     if (this.creatorCache) return this.creatorCache;
 
@@ -42,12 +139,14 @@ class DiscoveryAgent {
     let cursor = undefined;
     let hasMore = true;
 
+    const creatorDbId = config.creator_database_id || '0403b4267a54467a8bfd7dfb2cc4a7a8';
+
     while (hasMore) {
       const requestBody = { page_size: 100 };
       if (cursor) requestBody.start_cursor = cursor;
 
       const response = await fetch(
-        `https://api.notion.com/v1/databases/${config.creator_database_id}/query`,
+        `https://api.notion.com/v1/databases/${creatorDbId}/query`,
         {
           method: 'POST',
           headers: {
@@ -72,14 +171,14 @@ class DiscoveryAgent {
           creators.push({
             id: page.id,
             channelId,
-            name: page.properties.Name?.title?.[0]?.text?.content || 'Unknown',
+            name: page.properties['Content Creators']?.title?.[0]?.text?.content || 'Unknown',
             url: page.url
           });
         }
       }
 
       cursor = data.next_cursor;
-      hasMore = data.has_more && cursor;
+      hasMore = data.has_more && !!cursor;
     }
 
     await this.env.CONTENT_KV.put('creator_cache', JSON.stringify(creators), {
@@ -92,33 +191,38 @@ class DiscoveryAgent {
 
   extractChannelId(page) {
     const properties = page.properties;
-    const possibleNames = ['Channel ID', 'channel_id', 'ChannelID', 'YouTube ID', 'YouTube', 'ID'];
 
-    for (const name of possibleNames) {
-      const prop = properties[name];
-      if (!prop) continue;
-      if (prop.rich_text?.[0]) return prop.rich_text[0].text.content.trim();
-      if (prop.title?.[0]) return prop.title[0].text.content.trim();
-      if (prop.url) {
-        const match = prop.url.match(/channel\/(UC[\w-]+)/);
-        return match ? match[1] : prop.url;
-      }
+    // Primary: dedicated Channel ID field
+    const channelIdProp = properties['Channel ID'];
+    if (channelIdProp?.rich_text?.[0]) {
+      return channelIdProp.rich_text[0].text.content.trim();
     }
+
+    // Fallback: parse from Youtube URL field
+    const youtubeProp = properties['Youtube'];
+    if (youtubeProp?.url) {
+      const match = youtubeProp.url.match(/channel\/(UC[\w\-]+)/);
+      return match ? match[1] : youtubeProp.url;
+    }
+
     return null;
   }
 
   async invalidateCreatorCache() {
     await this.env.CONTENT_KV.delete('creator_cache');
+    await this.env.CONTENT_KV.delete('creator_db_channels');
     this.creatorCache = null;
     console.log('Creator cache invalidated');
   }
 
-  // ─── Main Run ───────────────────────────────────────────────────────────────
-
+  // ─── Main Run ──────────────────────────────────────────────────────────────
   async run() {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
-    const channels = await this.loadConfig();
 
+    // Load channels from Creator DB (replaces channels.json / KV channels_config)
+    const channels = await this.loadChannelsFromCreatorDB(config);
+
+    // Pre-warm creator cache for relation linking
     await this.loadCreatorCache(config);
 
     const results = {
@@ -132,8 +236,7 @@ class DiscoveryAgent {
 
     for (const channel of channels) {
       try {
-        console.log(`Processing: ${channel.name} [${channel.type}]`);
-
+        console.log(`Processing: ${channel.name} [${channel.type}] (${channel.id})`);
         switch (channel.type) {
           case 'youtube': {
             const r = await this.processYouTube(channel, config);
@@ -168,6 +271,7 @@ class DiscoveryAgent {
 
     await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({
       timestamp: new Date().toISOString(),
+      channelCount: channels.length,
       results
     }));
 
@@ -176,8 +280,7 @@ class DiscoveryAgent {
     });
   }
 
-  // ─── Source Processors ──────────────────────────────────────────────────────
-
+  // ─── Source Processors ─────────────────────────────────────────────────────
   async processYouTube(channel, config) {
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${config.youtube_api_key}`;
     const response = await fetch(url);
@@ -188,7 +291,6 @@ class DiscoveryAgent {
 
     for (const item of data.items || []) {
       const videoId = item.id.videoId;
-
       const exists = await this.env.CONTENT_KV.get(`video:${videoId}`);
       if (exists) continue;
 
@@ -219,7 +321,6 @@ class DiscoveryAgent {
           publishedAt: item.snippet.publishedAt,
           score
         }, channel, config);
-
         approved++;
       }
     }
@@ -242,13 +343,11 @@ class DiscoveryAgent {
     return { processed: 0, approved: 0 };
   }
 
-  // ─── AI Scoring ─────────────────────────────────────────────────────────────
-
+  // ─── AI Scoring ────────────────────────────────────────────────────────────
   async scoreContent(title, description, category) {
     const prompt = `Score 0-100 for ${category} tech blog relevance.
 Title: "${title}"
 Description: "${description?.substring(0, 500)}"
-
 Consider: technical depth, tutorial potential, evergreen value, audience interest.
 Return only the number.`;
 
@@ -261,7 +360,6 @@ Return only the number.`;
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
-
       const data = await response.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
       const match = text.match(/\d+/);
@@ -272,11 +370,7 @@ Return only the number.`;
     }
   }
 
-  // ─── Template Builder ────────────────────────────────────────────────────────
-  // Builds the Option D (Dashboard + Brand Forward) block structure.
-  // These blocks are passed as `children` in the page creation call so every
-  // new record lands pre-formatted — no separate stamper step required.
-
+  // ─── Template Builder ───────────────────────────────────────────────────────
   buildTemplateBlocks(video, channel, dateAdded) {
     const t = (text, bold = false, color = 'default') => ({
       type: 'text',
@@ -285,7 +379,7 @@ Return only the number.`;
     });
 
     return [
-      // ── TFR Branded Header ──────────────────────────────────────────────────
+      // ── TFR Branded Header ────────────────────────────────────────────────
       {
         object: 'block',
         type: 'callout',
@@ -300,8 +394,7 @@ Return only the number.`;
           color: 'gray_background'
         }
       },
-
-      // ── Pipeline Status Banner ──────────────────────────────────────────────
+      // ── Pipeline Status Banner ────────────────────────────────────────────
       {
         object: 'block',
         type: 'callout',
@@ -309,36 +402,28 @@ Return only the number.`;
           rich_text: [
             t('🟡 PIPELINE STATUS: ', true),
             t('🟡 Pending Review', false, 'yellow'),
-            t(`   ·   Added ${dateAdded}`, false, 'gray')
+            t(` · Added ${dateAdded}`, false, 'gray')
           ],
           icon: { emoji: '🟡' },
           color: 'yellow_background'
         }
       },
-
       { object: 'block', type: 'divider', divider: {} },
-
-      // ── Two-Column: Embed + Record Info ─────────────────────────────────────
+      // ── Two-Column: Embed + Record Info ───────────────────────────────────
       {
         object: 'block',
         type: 'column_list',
         column_list: {
           children: [
-            // Left: YouTube embed
             {
               object: 'block',
               type: 'column',
               column: {
                 children: [
-                  {
-                    object: 'block',
-                    type: 'embed',
-                    embed: { url: video.url }
-                  }
+                  { object: 'block', type: 'embed', embed: { url: video.url } }
                 ]
               }
             },
-            // Right: Record info callout
             {
               object: 'block',
               type: 'column',
@@ -356,7 +441,7 @@ Return only the number.`;
                         t('Source: ', true), t('YouTube\n'),
                         t('Added: ', true), t(`${dateAdded}\n`),
                         t('Tags: ', true),
-                        t((channel.tags || []).map(tag => `${tag}`).join('  '))
+                        t((channel.tags || []).map(tag => `${tag}`).join(' '))
                       ],
                       icon: { emoji: '📊' },
                       color: 'blue_background'
@@ -368,10 +453,8 @@ Return only the number.`;
           ]
         }
       },
-
       { object: 'block', type: 'divider', divider: {} },
-
-      // ── Gemini AI Brief ─────────────────────────────────────────────────────
+      // ── Gemini AI Brief ───────────────────────────────────────────────────
       {
         object: 'block',
         type: 'callout',
@@ -384,10 +467,8 @@ Return only the number.`;
           color: 'purple_background'
         }
       },
-
       { object: 'block', type: 'divider', divider: {} },
-
-      // ── TFR Blog Draft (toggle) ─────────────────────────────────────────────
+      // ── TFR Blog Draft (toggle) ───────────────────────────────────────────
       {
         object: 'block',
         type: 'toggle',
@@ -404,8 +485,7 @@ Return only the number.`;
           ]
         }
       },
-
-      // ── Short Form (toggle) ─────────────────────────────────────────────────
+      // ── Short Form (toggle) ───────────────────────────────────────────────
       {
         object: 'block',
         type: 'toggle',
@@ -420,8 +500,7 @@ Return only the number.`;
           ]
         }
       },
-
-      // ── Social Copy Panel (toggle) ──────────────────────────────────────────
+      // ── Social Copy Panel (toggle) ────────────────────────────────────────
       {
         object: 'block',
         type: 'toggle',
@@ -433,14 +512,10 @@ Return only the number.`;
               type: 'callout',
               callout: {
                 rich_text: [
-                  t('𝕏 / Twitter\n', true),
-                  t('...\n\n', false, 'gray'),
-                  t('Instagram\n', true),
-                  t('...\n\n', false, 'gray'),
-                  t('Reddit\n', true),
-                  t('...\n\n', false, 'gray'),
-                  t('LinkedIn\n', true),
-                  t('...', false, 'gray')
+                  t('𝕏 / Twitter\n', true), t('...\n\n', false, 'gray'),
+                  t('Instagram\n', true), t('...\n\n', false, 'gray'),
+                  t('Reddit\n', true), t('...\n\n', false, 'gray'),
+                  t('LinkedIn\n', true), t('...', false, 'gray')
                 ],
                 icon: { emoji: '📲' },
                 color: 'green_background'
@@ -449,8 +524,7 @@ Return only the number.`;
           ]
         }
       },
-
-      // ── SEO & Discoverability (toggle) ──────────────────────────────────────
+      // ── SEO & Discoverability (toggle) ────────────────────────────────────
       {
         object: 'block',
         type: 'toggle',
@@ -474,10 +548,8 @@ Return only the number.`;
           ]
         }
       },
-
       { object: 'block', type: 'divider', divider: {} },
-
-      // ── Pre-Publish Checklist ───────────────────────────────────────────────
+      // ── Pre-Publish Checklist ─────────────────────────────────────────────
       {
         object: 'block',
         type: 'callout',
@@ -499,10 +571,7 @@ Return only the number.`;
     ];
   }
 
-  // ─── Write to Notion ─────────────────────────────────────────────────────────
-  // Uses correct Content Catalog v2 property names from the actual schema.
-  // Template blocks are passed as `children` — no separate apply step needed.
-
+  // ─── Write to Notion ────────────────────────────────────────────────────────
   async writeToNotion(video, channel, config) {
     const creators = await this.loadCreatorCache(config);
     const creator = creators.find(c => c.channelId === channel.id);
@@ -510,66 +579,27 @@ Return only the number.`;
     console.log(`Writing to Notion: ${video.title}`);
     if (creator) console.log(`Creator match: ${creator.name}`);
 
-    const dateAdded = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const dateAdded = new Date().toISOString().split('T')[0];
 
-    // ── Properties (matching v2 schema exactly) ──────────────────────────────
     const properties = {
-      // Title (title property)
-      'Title': {
-        title: [{ text: { content: video.title } }]
-      },
-      // Video URL
+      'Title': { title: [{ text: { content: video.title } }] },
       '🎬 Video URL': { url: video.url },
-      // Video ID
-      '🆔 Video ID': {
-        rich_text: [{ text: { content: video.id } }]
-      },
-      // Channel ID
-      '📺 Channel ID': {
-        rich_text: [{ text: { content: channel.id } }]
-      },
-      // Thumbnail
-      '🖼️ Thumbnail': {
-        url: video.thumbnail || `https://img.youtube.com/vi/${video.id}/maxresdefault.jpg`
-      },
-      // Status (status type — not select)
-      'Status': {
-        status: { name: '🟡 Pending Review' }
-      },
-      // Category (select)
-      '🗂️ Category': {
-        select: { name: channel.category }
-      },
-      // Section (select)
-      '🗂️ Section': {
-        select: { name: channel.section }
-      },
-      // Tags (multi_select)
-      '🔖 Tags': {
-        multi_select: (channel.tags || []).map(tag => ({ name: tag }))
-      },
-      // Featured (checkbox)
-      'Featured': {
-        checkbox: channel.featured || false
-      },
-      // Source (multi_select — not select)
-      'Source': {
-        multi_select: [{ name: 'RSS' }]
-      },
-      // Date Added
-      '📅 Date Added': {
-        date: { start: dateAdded }
-      }
+      '🆔 Video ID': { rich_text: [{ text: { content: video.id } }] },
+      '📺 Channel ID': { rich_text: [{ text: { content: channel.id } }] },
+      '🖼️ Thumbnail': { url: video.thumbnail || `https://img.youtube.com/vi/${video.id}/maxresdefault.jpg` },
+      'Status': { status: { name: '🟡 Pending Review' } },
+      '🗂️ Category': { select: { name: channel.category } },
+      '🗂️ Section': { select: { name: channel.section } },
+      '🔖 Tags': { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
+      'Featured': { checkbox: channel.featured || false },
+      'Source': { multi_select: [{ name: 'RSS' }] },
+      '📅 Date Added': { date: { start: dateAdded } }
     };
 
-    // Content Creator relation
     if (creator) {
-      properties['Content Creator'] = {
-        relation: [{ id: creator.id }]
-      };
+      properties['Content Creator'] = { relation: [{ id: creator.id }] };
     }
 
-    // ── Page Creation with Template Blocks ───────────────────────────────────
     const payload = {
       parent: {
         database_id: config.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7'
