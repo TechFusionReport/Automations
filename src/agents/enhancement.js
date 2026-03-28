@@ -1,203 +1,138 @@
+// Enhancement Agent — TechFusion Report
+// Synchronous single-pass enhancement using Gemini.
+// Reads secrets from CONTENT_KV, writes results to Notion properties.
+
 export class EnhancementOrchestrator {
   constructor(env) {
     this.env = env;
   }
-  
-  async callGemini(prompt, temperature = 0.7) {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature, maxOutputTokens: 2048 }
-      })
-    });
-    
-    const data = await response.json();
+
+  async getSecrets() {
+    const raw = await this.env.CONTENT_KV.get('secrets');
+    return raw ? JSON.parse(raw) : {};
+  }
+
+  async callGemini(prompt, secrets, temperature = 0.7) {
+    const key = secrets.gemini_api_key;
+    if (!key) throw new Error('gemini_api_key missing from secrets');
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature, maxOutputTokens: 4096 }
+        })
+      }
+    );
+
+    if (!res.ok) throw new Error(`Gemini API error: ${res.status} ${await res.text()}`);
+    const data = await res.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
-  
+
+  // ─── Main entry point (called by enhancement-poller) ──────────────────────
   async start({ notionPageId, videoUrl, category, section, tags }) {
-    // Initialize workflow state
-    await this.env.AGENT_STATE.put(`workflow:${notionPageId}`, JSON.stringify({
-      status: 'researching',
-      notionPageId,
-      videoUrl,
-      category,
-      section,
-      tags,
-      startedAt: Date.now(),
-      agents: {}
-    }));
-    
-    // Queue research job
-    await this.env.ENHANCEMENT_QUEUE.send({
-      type: 'research',
-      notionPageId,
-      videoUrl,
-      category
-    });
-    
-    return new Response(JSON.stringify({ status: 'started', notionPageId }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-  
-  async runResearch({ notionPageId, videoUrl, category }) {
-    const state = JSON.parse(await this.env.AGENT_STATE.get(`workflow:${notionPageId}`));
-    
-    const prompt = `Research this ${category} video thoroughly:
-URL: ${videoUrl}
+    const secrets = await this.getSecrets();
+    const token   = secrets.notion_token;
+    if (!token) throw new Error('notion_token missing from secrets');
 
-Provide:
-1. Main technical topics (bullet list)
-2. Key tools/frameworks mentioned
-3. Current versions of technologies
-4. Related documentation links
-5. Target audience level
-6. 3 potential blog angles
+    // ── Step 1: Generate blog draft ─────────────────────────────────────────
+    const blogPrompt = `You are a tech blogger writing for TechFusion Report (techfusionreport.com).
+Write a complete, engaging blog post about this ${category} content.
 
-Format as structured text.`;
-    
-    const findings = await this.callGemini(prompt);
-    
-    state.agents.research = { findings, completedAt: Date.now() };
-    state.status = 'structuring';
-    await this.env.AGENT_STATE.put(`workflow:${notionPageId}`, JSON.stringify(state));
-    
-    // Queue next step
-    await this.env.ENHANCEMENT_QUEUE.send({
-      type: 'structure',
-      notionPageId,
-      category
-    });
-  }
-  
-  async runStructure({ notionPageId, category }) {
-    const state = JSON.parse(await this.env.AGENT_STATE.get(`workflow:${notionPageId}`));
-    
-    const prompt = `Create detailed blog outline for ${category} article:
-
-RESEARCH:
-${state.agents.research.findings}
-
-Create:
-1. SEO title (60 chars max)
-2. Meta description (155 chars)
-3. URL slug
-4. H2/H3 structure (3-5 sections)
-5. Key points per section
-6. Code snippet suggestions
-7. CTA placement
-
-Match CSS-Tricks/Smashing Magazine style.`;
-    
-    const outline = await this.callGemini(prompt);
-    
-    state.agents.structure = { outline, completedAt: Date.now() };
-    state.status = 'factchecking';
-    await this.env.AGENT_STATE.put(`workflow:${notionPageId}`, JSON.stringify(state));
-    
-    await this.env.ENHANCEMENT_QUEUE.send({
-      type: 'factcheck',
-      notionPageId
-    });
-  }
-  
-  async runFactCheck({ notionPageId }) {
-    const state = JSON.parse(await this.env.AGENT_STATE.get(`workflow:${notionPageId}`));
-    
-    const prompt = `Fact-check this content:
-
-RESEARCH: ${state.agents.research.findings}
-OUTLINE: ${state.agents.structure.outline}
-
-Identify:
-1. Outdated technology references
-2. Unclear explanations
-3. Missing beginner context
-4. Potential inaccuracies (confidence: high/medium/low)
-5. Suggested corrections
-
-Return structured report.`;
-    
-    const verification = await this.callGemini(prompt);
-    
-    state.agents.factcheck = { verification, completedAt: Date.now() };
-    state.status = 'finalizing';
-    await this.env.AGENT_STATE.put(`workflow:${notionPageId}`, JSON.stringify(state));
-    
-    await this.env.ENHANCEMENT_QUEUE.send({
-      type: 'finalize',
-      notionPageId
-    });
-  }
-  
-  async finalize({ notionPageId }) {
-    const state = JSON.parse(await this.env.AGENT_STATE.get(`workflow:${notionPageId}`));
-    
-    const prompt = `Create complete ${state.category} blog post (1500-2000 words):
-
-RESEARCH: ${state.agents.research.findings}
-STRUCTURE: ${state.agents.structure.outline}
-FACT-CHECK: ${state.agents.factcheck.verification}
+Video URL: ${videoUrl}
+Category: ${category}
+Section: ${section}
+Tags: ${(tags || []).join(', ')}
 
 Requirements:
-- Technical but accessible
-- Code examples as [CODE_BLOCK: description]
-- Affiliate placeholders: [AFFILIATE: toolname]
-- TL;DR at top
-- Clear CTA
+- 800–1200 words
+- Engaging intro that hooks the reader
+- 3–4 clear sections with H2 headings
+- Practical takeaways or key points
+- Brief conclusion with CTA to watch the video
+- Tone: conversational but professional
+- Write as if you've watched the video and are summarizing + adding context
 
-Write complete markdown now.`;
-    
-    const content = await this.callGemini(prompt, 0.8);
-    
-    // Update Notion with draft
-    await fetch(`https://api.notion.com/v1/blocks/${notionPageId}/children`, {
+Write the full blog post in HTML (use <h2>, <p>, <ul>, <li> tags).`;
+
+    const blogDraft = await this.callGemini(blogPrompt, secrets, 0.75);
+
+    // ── Step 2: Generate SEO metadata ───────────────────────────────────────
+    const seoPrompt = `Generate SEO metadata for this ${category} blog post.
+Video URL: ${videoUrl}
+Blog draft excerpt: ${blogDraft.substring(0, 500)}
+
+Return ONLY this exact format (no extra text):
+TITLE: [SEO title, max 60 chars]
+SLUG: [url-slug-lowercase-hyphens]
+META: [meta description, max 155 chars]
+KEYWORDS: [5-7 comma-separated keywords]`;
+
+    const seoRaw = await this.callGemini(seoPrompt, secrets, 0.3);
+
+    const getLine = (prefix) => {
+      const m = seoRaw.match(new RegExp(`${prefix}:\\s*(.+)`));
+      return m ? m[1].trim() : '';
+    };
+
+    const seoTitle    = getLine('TITLE');
+    const seoSlug     = getLine('SLUG');
+    const seoMeta     = getLine('META');
+    const seoKeywords = getLine('KEYWORDS');
+
+    // ── Step 3: Generate social copy ────────────────────────────────────────
+    const socialPrompt = `Write social media copy for this ${category} content.
+Title: ${seoTitle || videoUrl}
+Blog excerpt: ${blogDraft.substring(0, 300)}
+
+Return ONLY this format:
+TWITTER: [tweet, max 240 chars, include relevant hashtags]
+INSTAGRAM: [Instagram caption, 2-3 sentences + hashtags]
+LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
+
+    const socialRaw = await this.callGemini(socialPrompt, secrets, 0.7);
+
+    const twitter   = socialRaw.match(/TWITTER:\s*(.+)/)?.[1]?.trim() || '';
+    const instagram = socialRaw.match(/INSTAGRAM:\s*(.+)/)?.[1]?.trim() || '';
+    const linkedin  = socialRaw.match(/LINKEDIN:\s*(.+)/)?.[1]?.trim() || '';
+
+    // ── Step 4: Write all results back to Notion ────────────────────────────
+    const props = {};
+
+    if (blogDraft)    props['📝 Blog Draft']  = { rich_text: [{ text: { content: blogDraft.substring(0, 2000) } }] };
+    if (seoTitle)     props['📰 SEO Title']   = { rich_text: [{ text: { content: seoTitle } }] };
+    if (seoMeta)      props['📝 SEO Meta']    = { rich_text: [{ text: { content: seoMeta } }] };
+    if (seoKeywords)  props['🔑 Keywords']    = { rich_text: [{ text: { content: seoKeywords } }] };
+    if (seoSlug)      props['🔗 Slug']        = { rich_text: [{ text: { content: seoSlug } }] };
+    if (twitter || instagram || linkedin) {
+      props['✂️ Short Form'] = { rich_text: [{ text: { content:
+        `Twitter:\n${twitter}\n\nInstagram:\n${instagram}\n\nLinkedIn:\n${linkedin}`
+      } }] };
+    }
+
+    const patchRes = await fetch(`https://api.notion.com/v1/pages/${notionPageId}`, {
       method: 'PATCH',
       headers: {
-        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Notion-Version': '2022-06-28'
       },
-      body: JSON.stringify({
-        children: [
-          {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [{ text: { content: `AI Draft Generated [${state.category}]` } }]
-            }
-          },
-          {
-            object: 'block',
-            type: 'code',
-            code: {
-              language: 'markdown',
-              rich_text: [{ text: { content: content.substring(0, 2000) + '...' } }]
-            }
-          }
-        ]
-      })
+      body: JSON.stringify({ properties: props })
     });
-    
-    // Update status
-    await fetch(`https://api.notion.com/v1/pages/${notionPageId}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      body: JSON.stringify({
-        properties: { Status: { select: { name: 'Draft Review' } } }
-      })
-    });
-    
-    state.agents.final = { content, wordCount: content.split(/\s+/).length };
-    state.status = 'draft_ready';
-    state.completedAt = Date.now();
-    await this.env.AGENT_STATE.put(`workflow:${notionPageId}`, JSON.stringify(state));
+
+    if (!patchRes.ok) throw new Error(`Notion PATCH failed: ${await patchRes.text()}`);
+
+    return { notionPageId, seoTitle, seoSlug, blogWordCount: blogDraft.split(/\s+/).length };
+  }
+
+  // ─── Queue message handler (kept for backwards compat with index.js) ──────
+  async processMessage({ type, notionPageId, videoUrl, category, section, tags }) {
+    if (type === 'enhance' || type === 'research' || type === 'structure' || type === 'factcheck' || type === 'finalize') {
+      return await this.start({ notionPageId, videoUrl, category, section, tags });
+    }
   }
 }
