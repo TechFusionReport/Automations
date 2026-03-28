@@ -5,6 +5,37 @@ Read this before taking any action in the codebase.
 
 ---
 
+## 🗣️ Terminology & Shorthand
+
+When Justin uses these phrases, this is exactly what they mean. Never interpret them differently.
+
+| What Justin Says | What It Means |
+|---|---|
+| **task tracker** | ⚡ TFR Task Tracker — TFR business tasks only. https://www.notion.so/techfusionreport/9a75e952ff6140c786a1e364ce60eea6?v=31cbd080de9280cba772000c3ac26b91 |
+| **Life Task Tracker** | 🗂️ Personal tasks only — Personal, Homelab, Life Admin, Health, Finance (`6a3e9f805a4c40d4871f12564cf44c8a`) |
+| **Life OS** | 🧭 PARA home — both trackers, Projects, Areas, Resources, Archive (`331bd080-de92-81f2-af00-efe2b392d82a`) |
+| **Second Brain** | 🧠 Digital Memory Hub — personal knowledge databases (`331bd080-de92-8145-99c2-d270c05aff28`) |
+| **dev log** | The 🛠️ Blog Automation Dev Log page in Notion (`313bd080-de92-8159-bcee-c3fc4ed83462`) |
+| **the pipeline** | The full Cloudflare Workers content pipeline (discovery → enhancement → publishing) |
+| **the worker** | `techfusion-api` Cloudflare Worker at `https://techfusion-api.quiet-shadow-2fce.workers.dev` |
+| **the dashboard** / **TFR OS** / **the OS** | ⚡ TechFusion OS — TFR command center (`31cbd080-de92-81e3-aa4c-d1aed5a4c05a`) |
+| **the catalog** | Content Catalog v2 Notion database (`1fbbd080-de92-8043-89aa-dc02853c15c7`) |
+| **the creator DB** | Content Creators Notion database (`0403b4267a54467a8bfd7dfb2cc4a7a8`) |
+| **the homelab** / **phonelab** | Personal S25 Ultra + Hetzner cloud setup — NOT TFR business scope. Runs under `justin` user at `~/homelab/` |
+| **the server** / **TFR-Prod** | The Hetzner VPS running at the TFR-Prod hostname |
+| **Automations repo** | `TechFusionReport/Automations` GitHub repository (this repo) |
+| **Website repo** | `TechFusionReport/Website` GitHub repository |
+| **deploy it** | Commit to main → Cloudflare Git integration auto-deploys. Never run wrangler manually. |
+| **the poller** | Whichever of `enhancement-poller.js` or `publisher-poller.js` is relevant in context |
+| **end-to-end test** | One full record flowing: discovery → Content Catalog v2 → enhancement → publish → GitHub Pages |
+
+**Priority hierarchy — used in both TFR Task Tracker and Life Task Tracker:**
+🔴 Critical = blocking or must happen today | 🟠 High = this week | 🟡 Medium = this month | ⚪ Low = someday
+
+When in doubt about what a phrase refers to, check this list before asking for clarification.
+
+---
+
 ## 🏢 Project Identity
 
 **TechFusion Report (TFR)** is a professional tech-focused publication at `techfusionreport.com`.
@@ -19,12 +50,20 @@ Do not conflate TFR work with personal homelab tinkering (see Scope Boundaries b
 ## 🏗️ Stack Overview
 
 ### Hosting & Infrastructure
-- **Website:** GitHub Pages (`TechFusionReport/Website` repo) — static site
-- **Automation backend:** Cloudflare Workers (`techfusion-api`)
-  - Worker URL: `https://techfusion-api.quiet-shadow-2fce.workers.dev`
-  - Deployed via **GitHub UI direct edit** or **Cloudflare Git integration** (auto-deploys on push to main)
-- **Content database:** Notion (Content Catalog v2)
-- **VPS:** Hetzner TFR-Prod server — used for Claude Code sessions, repo management, and future self-hosted services (n8n, etc.)
+- **Command center:** ⚡ TechFusion OS in Notion (`31cbd080-de92-81e3-aa4c-d1aed5a4c05a`)
+- **Cloudflare Worker:** `techfusion-api` — `https://techfusion-api.quiet-shadow-2fce.workers.dev`
+  - Deploy via GitHub UI direct edit or Cloudflare Git integration. Never run wrangler manually.
+- **Content database:** Notion Content Catalog v2
+- **VPS:** Hetzner TFR-Prod (`tfr` user) — Claude Code sessions, repo management
+
+### GitHub Structure
+**TechFusionReport org** = TFR business only. All repos are peers — no hierarchy:
+- `Automations` — Cloudflare Workers backend, agents, pipeline logic (this repo)
+- `Website` — GitHub Pages frontend, HTML/CSS/JS, blog posts
+- `Master` — reference/docs
+- `DiscordBot` — Discord integration
+
+**Personal account (`jmsmith1003`)** = homelab scripts, personal projects, experiments. Nothing personal belongs in the TechFusionReport org.
 
 ### Content Pipeline Flow
 ```
@@ -127,94 +166,65 @@ All rotated as of March 2026. Retrieve from Cloudflare KV, never from source fil
 
 ---
 
-## ⚠️ Known Open Issues (as of 2026-03-28)
+## ⚠️ Known Open Issues (as of 2026-03-27)
 - Repo still contains stale files needing cleanup: `techfusion-api/`, `techfusion-admin/`,
   `estate/`, `wrangler.toml.backup`, `wrangler-admin.toml`, old `.yaml`/`.py` scripts
 - `blog.html` index auto-population not yet working
 - Inline DB view + button setup on TechFusion OS dashboard needs manual Notion UI setup
-- Enhancement agent writes blog draft to `📝 Blog Draft` property (2000 char limit due to
-  Notion rich_text cap) — full draft does not populate the toggle blocks in page content yet
-- Gemini model: uses `gemini-2.5-flash` (confirmed available for this API key as of 2026-03-28)
 
 ---
 
 ## 🏠 Scope Boundaries — TFR vs. Personal Homelab
 
-This repository is **strictly TFR business scope**. Do not mix in:
+### Server User Structure
+The Hetzner TFR-Prod server runs two users with deliberate separation:
 
-| Personal / Homelab | TFR Business |
+| User | Purpose | Scope |
+|---|---|---|
+| `tfr` | TFR business work | This repo — Claude Code, Automations, Website |
+| `justin` | Personal homelab | Docker, n8n, Vaultwarden, personal projects |
+
+**You are always operating as the `tfr` user.** If a task belongs to the `justin` user
+or the homelab, stop and say so. Do not cross user boundaries.
+
+### tmux Window Layout
+```
+tmux session: tfr
+  Window 0 (tfr)     → Claude Code in ~/tfr/Automations — TFR ONLY
+  Window 1 (homelab) → ~/homelab work — PERSONAL ONLY
+```
+Switch windows: Ctrl+B then 0 (TFR) or Ctrl+B then 1 (homelab).
+
+### What Belongs Here vs. Homelab
+
+| ❌ Personal / Homelab (justin user) | ✅ TFR Business (tfr user) |
 |---|---|
-| Hetzner server config, Docker, Traefik, Portainer | Cloudflare Workers pipeline |
-| Vaultwarden, Pi-hole, WireGuard, Home Assistant | Notion content database |
-| Facebook Reels pipeline | GitHub Pages website |
-| Personal n8n experiments | TFR content verticals |
-| S25 Ultra Termux setup | Creator DB channel management |
+| Docker, Traefik, Portainer | Cloudflare Workers pipeline |
+| Vaultwarden, n8n personal | Notion content database |
+| Home Assistant, Pi-hole | GitHub Pages website |
+| Facebook Reels pipeline | Creator DB channel management |
+| Server config, system-level changes | TFR content verticals |
 
-If a task involves personal homelab infrastructure (server hardening, self-hosted apps,
-personal automation ideas), that work does not belong in this repo. Keep a separate
-workspace or notes for homelab/personal projects.
+### Why This Separation Exists
+TechFusion Report is a professional publication with revenue potential.
+Keeping personal projects out of TFR infrastructure ensures clean documentation,
+professional credibility, and clear boundaries if TFR ever becomes a formal business entity.
+This is not just a preference — treat it as a hard rule.
 
-The Hetzner VPS is shared infrastructure — it hosts both TFR work (this repo) and
-future personal homelab services — but the **code in this repo** is TFR-only.
+The homelab has its own CLAUDE.md at `~/homelab/CLAUDE.md` with its own context.
+If Justin switches to homelab work, he will launch Claude Code from that directory instead.
 
 ---
 
-## 📓 Notion Logging — MANDATORY
+## 📓 Notion Logging — MANDATORY (no prompting needed)
 
-After every completed task or work session, you MUST update the TFR Notion workspace.
-This is non-negotiable and does not require being asked. Do it automatically.
+**TFR Task Tracker** — update TFR task status whenever something starts, completes, blocks, or is discovered. Keeps Justin productive on the business side.
+URL: https://www.notion.so/techfusionreport/9a75e952ff6140c786a1e364ce60eea6?v=31cbd080de9280cba772000c3ac26b91
 
-### Dev Log
-**Page ID:** `313bd080-de92-8159-bcee-c3fc4ed83462`
-**URL:** https://www.notion.so/313bd080de928159bceec3fc4ed83462
+**Dev Log** — add a dated session entry after every session. What was done, what failed, how it was fixed, what's next. Update the Known Issues table (`## 🐛 Known Issues`) in the same pass.
+Page ID: `313bd080-de92-8159-bcee-c3fc4ed83462`
 
-Add a new session entry under `## 🗓️ Session Logs` as a `<details>` toggle block with today's date:
-
-```
-📅 YYYY-MM-DD — [Brief session title]
-
-What we did:
-- Bullet list of everything completed this session
-
-Issues encountered:
-- Any errors, blockers, or unexpected behavior
-
-How we corrected them:
-- Solutions and workarounds applied
-
-Next steps:
-- What should happen next in priority order
-```
-
-### Known Issues Table
-Also update the `## 🐛 Known Issues` table in the same dev log page:
-- Mark completed tasks as `🟢 Fixed` with a note on how it was resolved
-- Add new issues discovered as `🔴 Open`
-- Update `🟡 In Progress` items with current status
-- Move items to `⏳ Phase 2` if deferred
-
-### CLAUDE.md Self-Maintenance
-This file must stay current. Update it whenever any of the following change:
-- A new agent, file, or route is added to the codebase
-- A Notion DB ID, Worker URL, or secret name changes
-- A known issue is resolved or a new one is discovered
-- The deployment process changes
-- The pipeline flow changes (new steps, removed steps, new pollers)
-- A new repo or service is added to the stack
-- The priority order shifts
-
-Update CLAUDE.md **in the same commit** as the code change that made it stale.
-Do not defer CLAUDE.md updates — an outdated context file causes bad decisions in future sessions.
-
-### Logging Frequency
-- **After every discrete task** — if you fix a bug, add a feature, or complete a refactor, log it
-- **At minimum once per session** — even if the session was exploratory or inconclusive
-- **Always log before ending a session** — never leave a session without updating the dev log
-
-### What to Capture
-Always include: what was attempted, what worked, what didn't, any error messages encountered,
-the solution applied, and the explicit next action. Be specific — vague entries like
-"fixed some stuff" are not acceptable. Future sessions depend on this log being accurate.
+**CLAUDE.md** — update in the same commit as any stack change. Never let it go stale.
 
 ---
 
