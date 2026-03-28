@@ -91,7 +91,7 @@ export class PublishingAgent {
 
   async updateNotionRecord(pageId, githubUrl, date, secrets) {
     const token = secrets.notion_token;
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -100,13 +100,18 @@ export class PublishingAgent {
       },
       body: JSON.stringify({
         properties: {
-          'Status':               { status:   { name: '✅ Published' } },
-          '🔗 Published URL':     { url: githubUrl },
+          'Status':                 { status:   { name: '✨ Published to Github' } },
+          '🔗 Published URL':       { url: githubUrl },
           '✅ Published To Github': { checkbox: true },
-          '📅 Published Date':    { date: { start: date } }
+          '📅 Published Date':      { date: { start: date } }
         }
       })
     });
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('Notion record update failed:', err);
+      // Don't throw — GitHub publish succeeded, Notion update is best-effort
+    }
   }
 
   convertToHTML(markdown, metadata) {
