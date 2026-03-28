@@ -13,124 +13,102 @@ export class PublishingAgent {
       .substring(0, 60);
   }
 
-  async publish({ notionPageId, title, content, category, section, tags, abTest = false }) {
+  async getSecrets() {
+    const raw = await this.env.CONTENT_KV.get('secrets');
+    return raw ? JSON.parse(raw) : {};
+  }
+
+  async publish({ notionPageId, title, content, category, section, tags, featured = false }) {
+    const secrets = await this.getSecrets();
+    const date    = new Date().toISOString().split('T')[0];
+    const slug    = this.createSlug(title);
+
     const metadata = {
       title,
       description: this.generateMetaDescription(content),
-      date: new Date().toISOString().split('T')[0],
-      slug: this.createSlug(title),
+      date,
+      slug,
       category: category || 'General',
-      section: section || 'general',
-      tags: tags || [],
-      notionPageId
+      section:  section  || 'Technology',
+      tags:     tags     || [],
+      notionPageId,
+      featured
     };
 
     // Insert affiliate links
     const contentWithAffiliates = this.affiliateInserter.insert(content);
 
-    // Generate A/B variants if requested
-    let variants = null;
-    if (abTest) {
-      variants = await this.generateHeadlineVariants(title);
-    }
-
     // Convert to HTML
-    const html = this.convertToHTML(contentWithAffiliates, metadata, variants);
+    const html = this.convertToHTML(contentWithAffiliates, metadata);
 
-    // Commit to GitHub
-    const path = `${metadata.section}/${metadata.category.toLowerCase().replace(/\s+/g, '-')}/${metadata.slug}.html`;
-    const githubUrl = await this.commitToGitHub(path, html, metadata);
+    // Commit to GitHub Pages — _posts/YYYY-MM-DD-slug.html
+    const path      = `_posts/${date}-${slug}.html`;
+    const githubUrl = await this.commitToGitHub(path, html, metadata, secrets);
 
-    // Store article data
-    await this.env.CONTENT_KV.put(`article:${metadata.slug}`, JSON.stringify({
-      ...metadata,
-      githubUrl,
-      publishedAt: Date.now(),
-      views: 0
+    // Store article data in KV
+    await this.env.CONTENT_KV.put(`article:${slug}`, JSON.stringify({
+      ...metadata, githubUrl, publishedAt: Date.now(), views: 0
     }));
 
-    // Update Notion
-    await this.updateNotionStatus(notionPageId, 'Published', githubUrl);
+    // Update Notion record
+    await this.updateNotionRecord(notionPageId, githubUrl, date, secrets);
 
-    // Generate social content
-    const social = await this.generateSocialContent(metadata, content);
-    await this.env.CONTENT_KV.put(`social:${notionPageId}`, JSON.stringify(social));
-
-    // Auto-crosspost if featured
-    if (metadata.featured) {
-      await this.env.PUBLISHING_QUEUE.send({
-        type: 'crosspost',
-        articleId: notionPageId,
-        platforms: ['medium', 'devto']
-      });
-    }
-
-    return new Response(JSON.stringify({
-      status: 'published',
-      url: `https://techfusionreport.com/${path}`,
-      github: githubUrl,
-      social,
-      variants: variants ? variants.map(v => v.headline) : null
-    }), { headers: { 'Content-Type': 'application/json' }});
+    const liveUrl = `https://techfusionreport.com/${path}`;
+    return new Response(JSON.stringify({ status: 'published', url: liveUrl, github: githubUrl }),
+      { headers: { 'Content-Type': 'application/json' } });
   }
 
-  async commitToGitHub(path, html, metadata) {
+  async commitToGitHub(path, html, metadata, secrets) {
+    const pat           = secrets.github_pat;
+    if (!pat) throw new Error('github_pat missing from secrets');
     const base64Content = btoa(unescape(encodeURIComponent(html)));
+    const apiBase       = `https://api.github.com/repos/TechFusionReport/Website/contents/${path}`;
+    const headers       = {
+      'Authorization': `token ${pat}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json'
+    };
 
-    // Check if file exists
-    const checkRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
-      headers: {
-        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json'
-      }
-    });
+    // Check if file exists (to get sha for updates)
+    const checkRes = await fetch(apiBase, { headers });
+    const sha      = checkRes.ok ? (await checkRes.json()).sha : undefined;
 
-    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
-
-    // Create or update file
-    const commitRes = await fetch(`https://api.github.com/repos/TechFusionReport/Website/contents/${path}`, {
+    const commitRes = await fetch(apiBase, {
       method: 'PUT',
-      headers: {
-        'Authorization': `token ${this.env.GITHUB_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'Content-Type': 'application/json'
-      },
+      headers,
       body: JSON.stringify({
         message: `Add: ${metadata.title} [${metadata.category}]`,
         content: base64Content,
-        sha,
-        committer: {
-          name: 'TechFusion Bot',
-          email: 'bot@techfusionreport.com'
-        }
+        ...(sha ? { sha } : {}),
+        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
       })
     });
 
-    if (!commitRes.ok) {
-      throw new Error(`GitHub commit failed: ${await commitRes.text()}`);
-    }
-
+    if (!commitRes.ok) throw new Error(`GitHub commit failed: ${await commitRes.text()}`);
     return (await commitRes.json()).content.html_url;
   }
 
-  async updateNotionStatus(pageId, status, url) {
+  async updateNotionRecord(pageId, githubUrl, date, secrets) {
+    const token = secrets.notion_token;
     await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       method: 'PATCH',
       headers: {
-        'Authorization': `Bearer ${this.env.NOTION_TOKEN}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Notion-Version': '2022-06-28'
       },
       body: JSON.stringify({
         properties: {
-          Status: { select: { name: status } },
-          "Published URL": { url }
+          'Status':               { status:   { name: '✅ Published' } },
+          '🔗 Published URL':     { url: githubUrl },
+          '✅ Published To Github': { checkbox: true },
+          '📅 Published Date':    { date: { start: date } }
         }
       })
     });
   }
 
-  convertToHTML(markdown, metadata, variants = null) {
+  convertToHTML(markdown, metadata) {
     let html = markdown
       .replace(/^# (.*$)/gim, '<h1>$1</h1>')
       .replace(/^## (.*$)/gim, '<h2 id="$1">$1</h2>')
@@ -144,9 +122,9 @@ export class PublishingAgent {
       .replace(/\[SPONSOR\]/gim, this.getSponsorBanner(metadata.category))
       .replace(/\n/gim, '<br>');
 
-    const toc = this.generateTOC(markdown);
-    const abScript = variants ? this.generateABScript(variants, metadata.slug) : '';
+    const toc           = this.generateTOC(markdown);
     const internalLinks = this.suggestInternalLinks(metadata.category);
+    const postPath      = `_posts/${metadata.date}-${metadata.slug}.html`;
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -164,9 +142,8 @@ export class PublishingAgent {
   <script type="application/ld+json">
   ${JSON.stringify(this.generateSchema(metadata))}
   </script>
-  ${abScript}
   <link rel="stylesheet" href="/assets/style.css">
-  <link rel="canonical" href="https://techfusionreport.com/${metadata.section}/${metadata.category.toLowerCase().replace(/\s+/g, '-')}/${metadata.slug}.html">
+  <link rel="canonical" href="https://techfusionreport.com/${postPath}">
 </head>
 <body>
   <article data-category="${metadata.category}" data-section="${metadata.section}" data-slug="${metadata.slug}">
@@ -282,7 +259,8 @@ Create:
 Format clearly.`;
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
+      const secrets  = await this.getSecrets();
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${secrets.gemini_api_key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
