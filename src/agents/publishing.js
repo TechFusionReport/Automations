@@ -110,7 +110,16 @@ export class PublishingAgent {
     if (!res.ok) {
       const err = await res.text();
       console.error('Notion record update failed:', err);
-      // Don't throw — GitHub publish succeeded, Notion update is best-effort
+      // Write error to the record so we can see it without Cloudflare logs
+      await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        body: JSON.stringify({ properties: { '⚠️ Last Error': { rich_text: [{ text: { content: `Notion update failed: ${err.substring(0, 500)}` } }] } } })
+      });
     }
   }
 
