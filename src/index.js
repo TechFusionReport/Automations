@@ -190,6 +190,24 @@ export default {
       return json(summary);
     });
 
+    // ── Temporary debug endpoint (remove after diagnosing) ────────────────
+    router.get('/admin/debug-notion', async (req, env) => {
+      const config = JSON.parse(await env.CONTENT_KV.get('secrets') || '{}');
+      const hasToken = !!config.notion_token;
+      const tokenPrefix = config.notion_token ? config.notion_token.substring(0, 10) + '...' : 'MISSING';
+      const res = await fetch('https://api.notion.com/v1/databases/0403b4267a54467a8bfd7dfb2cc4a7a8/query', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.notion_token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        body: JSON.stringify({ page_size: 1 })
+      });
+      const body = await res.text();
+      return json({ hasToken, tokenPrefix, status: res.status, response: body.substring(0, 500) });
+    });
+
     // ── Status & health ────────────────────────────────────────────────────
     router.get('/status', async (req, env) => {
       const [lastDiscovery, lastEnhancePoll, lastPublishPoll, channels, creators] =
