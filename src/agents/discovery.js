@@ -225,7 +225,7 @@ class DiscoveryAgent {
     for (const item of data.items || []) {
       const videoId = item.id.videoId;
       if (await this.env.CONTENT_KV.get(`video:${videoId}`)) continue;
-      const score = await this.scoreContent(item.snippet.title, item.snippet.description, channel.category);
+      const score = this.scoreContent(item.snippet.title, item.snippet.description, channel.category);
       await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({ title: item.snippet.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
       processed++;
       if (score > channel.minScore && approved < 3) {
@@ -255,7 +255,7 @@ class DiscoveryAgent {
       const key = `rss:${btoa(keyRaw).replace(/[^a-zA-Z0-9]/g, '').slice(0, 32)}`;
       if (await this.env.CONTENT_KV.get(key)) continue;
 
-      const score = await this.scoreContent(item.title, item.description, channel.category);
+      const score = this.scoreContent(item.title, item.description, channel.category);
       await this.env.CONTENT_KV.put(key, JSON.stringify({ title: item.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
       processed++;
 
@@ -289,7 +289,7 @@ class DiscoveryAgent {
       const key = `hn:${story.id}`;
       if (await this.env.CONTENT_KV.get(key)) continue;
       const category = this.inferCategory(story.title);
-      const score = await this.scoreContent(story.title, story.text || '', category);
+      const score = this.scoreContent(story.title, story.text || '', category);
       await this.env.CONTENT_KV.put(key, JSON.stringify({ title: story.title, score, processedAt: Date.now() }), { expirationTtl: 604800 });
       processed++;
 
@@ -309,18 +309,19 @@ class DiscoveryAgent {
   }
 
   // ─── AI Scoring ─────────────────────────────────────────────────────────────
-  async scoreContent(title, description, category) {
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.env.GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: `Score 0-100 for ${category} tech blog relevance.\nTitle: "${title}"\nDescription: "${(description||'').slice(0,500)}"\nReturn only the number.` }] }] })
-      });
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
-      const m = text.match(/\d+/);
-      return m ? parseInt(m[0]) : 50;
-    } catch { return 50; }
+  scoreContent(title, description, category) {
+    // Local keyword scorer — keeps discovery within subrequest limits.
+    // Gemini AI scoring happens in the enhancement stage, not here.
+    const text = `${title} ${description || ''}`.toLowerCase();
+    const signals = {
+      Technology:     ['ai', 'tech', 'software', 'hardware', 'app', 'android', 'iphone', 'google', 'apple', 'samsung', 'phone', 'laptop', 'review', 'vs', '2024', '2025', 'best', 'new', 'update', 'feature'],
+      Entertainment:  ['movie', 'film', 'tv', 'show', 'series', 'watch', 'stream', 'netflix', 'disney', 'trailer', 'review', 'react', 'music', 'song', 'album', 'release'],
+      Productivity:   ['productivity', 'notion', 'workflow', 'automate', 'tool', 'tips', 'tricks', 'hack', 'save time', 'efficiency', 'organize', 'system', 'notion', 'obsidian', 'excel', 'sheets'],
+    };
+    const keywords = signals[category] || signals.Technology;
+    const hits = keywords.filter(k => text.includes(k)).length;
+    // Base 50 + 5 per keyword hit, capped at 95
+    return Math.min(95, 50 + hits * 5);
   }
 
   // ─── Template Builder ────────────────────────────────────────────────────────
