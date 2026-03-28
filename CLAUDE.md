@@ -166,11 +166,10 @@ All rotated as of March 2026. Retrieve from Cloudflare KV, never from source fil
 
 ---
 
-## ⚠️ Known Open Issues (as of 2026-03-27)
-- Repo still contains stale files needing cleanup: `techfusion-api/`, `techfusion-admin/`,
-  `estate/`, `wrangler.toml.backup`, `wrangler-admin.toml`, old `.yaml`/`.py` scripts
+## ⚠️ Known Open Issues (as of 2026-03-28)
 - `blog.html` index auto-population not yet working
 - Inline DB view + button setup on TechFusion OS dashboard needs manual Notion UI setup
+- `src/utils/` is empty — placeholder kept intentionally
 
 ---
 
@@ -230,7 +229,7 @@ Page ID: `313bd080-de92-8159-bcee-c3fc4ed83462`
 
 ## 🎯 Current Priority Order
 1. ~~Run end-to-end pipeline test~~ ✅ Complete (2026-03-28)
-2. Clean up stale files from repo root and src/
+2. ~~Clean up stale files from repo root and src/~~ ✅ Complete (2026-03-28)
 3. Fix blog.html index auto-population from posts.json
 4. Set up Content Queue linked DB view on TechFusion OS dashboard
 5. Phase 2: n8n orchestration (Add Channel workflow, error notifications, cron management)
