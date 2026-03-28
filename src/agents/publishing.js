@@ -100,7 +100,7 @@ export class PublishingAgent {
       },
       body: JSON.stringify({
         properties: {
-          'Status':                 { status:   { name: '✨ Published to Github' } },
+          'Status':                 { status:   { name: '✅Published To Github' } },
           '🔗 Published URL':       { url: githubUrl },
           '✅ Published To Github': { checkbox: true },
           '📅 Published Date':      { date: { start: date } }
