@@ -45,6 +45,9 @@ export class PublishingAgent {
     const path      = `_posts/${date}-${slug}.html`;
     const githubUrl = await this.commitToGitHub(path, html, metadata, secrets);
 
+    // Update posts.json index (homepage + blog.html read this)
+    await this.updatePostsJson(metadata, githubUrl, secrets);
+
     // Store article data in KV
     await this.env.CONTENT_KV.put(`article:${slug}`, JSON.stringify({
       ...metadata, githubUrl, publishedAt: Date.now(), views: 0
@@ -56,6 +59,57 @@ export class PublishingAgent {
     const liveUrl = `https://techfusionreport.com/${path}`;
     return new Response(JSON.stringify({ status: 'published', url: liveUrl, github: githubUrl }),
       { headers: { 'Content-Type': 'application/json' } });
+  }
+
+  async updatePostsJson(metadata, githubUrl, secrets) {
+    const pat     = secrets.github_pat;
+    const apiBase = 'https://api.github.com/repos/TechFusionReport/Website/contents/posts.json';
+    const headers = {
+      'Authorization': `token ${pat}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'TechFusionReport-Bot/1.0'
+    };
+
+    // Fetch existing posts.json
+    const existing = await fetch(apiBase, { headers });
+    let posts = [];
+    let sha;
+    if (existing.ok) {
+      const data = await existing.json();
+      sha = data.sha;
+      try {
+        posts = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
+      } catch { posts = []; }
+    }
+
+    // Prepend new entry (newest first), deduplicate by slug
+    const newSlug = `${metadata.date}-${metadata.slug}`;
+    posts = posts.filter(p => p.slug !== newSlug);
+    posts.unshift({
+      title:    metadata.title,
+      slug:     newSlug,
+      date:     metadata.date,
+      category: metadata.category || 'Technology',
+      excerpt:  metadata.description || '',
+      url:      `/_posts/${newSlug}.html`
+    });
+
+    const content = btoa(unescape(encodeURIComponent(JSON.stringify(posts, null, 2))));
+    const res = await fetch(apiBase, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        message: `Update posts.json: add ${metadata.title}`,
+        content,
+        ...(sha ? { sha } : {}),
+        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
+      })
+    });
+
+    if (!res.ok) {
+      console.error('posts.json update failed:', await res.text());
+    }
   }
 
   async commitToGitHub(path, html, metadata, secrets) {
