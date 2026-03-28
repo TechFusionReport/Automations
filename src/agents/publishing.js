@@ -66,7 +66,8 @@ export class PublishingAgent {
     const headers       = {
       'Authorization': `token ${pat}`,
       'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'User-Agent': 'TechFusionReport-Bot/1.0'
     };
 
     // Check if file exists (to get sha for updates)
