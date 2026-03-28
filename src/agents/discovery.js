@@ -47,7 +47,7 @@ function parseRSS(xml) {
 // ─── HackerNews API ──────────────────────────────────────────────────────────
 async function fetchHackerNewsTop(minScore = 150, limit = 15) {
   const topRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
-  const ids = (await topRes.json()).slice(0, 50);
+  const ids = (await topRes.json()).slice(0, 20);
 
   const stories = await Promise.all(
     ids.map(async (id) => {
@@ -175,12 +175,19 @@ class DiscoveryAgent {
   }
 
   // ─── Main Run ───────────────────────────────────────────────────────────────
-  async run() {
+  async run(batchSize = 10) {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
-    const channels = await this.loadChannelsFromCreatorDB(config);
+    const allChannels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
 
-    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
+    // Rotate through channels across cron runs to stay within subrequest limits
+    const offsetRaw = await this.env.CONTENT_KV.get('discovery_offset');
+    const offset = offsetRaw ? parseInt(offsetRaw) : 0;
+    const channels = allChannels.slice(offset, offset + batchSize);
+    const nextOffset = (offset + batchSize) >= allChannels.length ? 0 : offset + batchSize;
+    await this.env.CONTENT_KV.put('discovery_offset', String(nextOffset));
+
+    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [], batchOffset: offset, totalChannels: allChannels.length };
 
     // HackerNews runs unconditionally — free trending signal layer
     try {
@@ -205,7 +212,7 @@ class DiscoveryAgent {
       }
     }
 
-    await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({ timestamp: new Date().toISOString(), channelCount: channels.length, results }));
+    await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({ timestamp: new Date().toISOString(), channelCount: allChannels.length, batchOffset: offset, batchSize: channels.length, results }));
     return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' } });
   }
 
