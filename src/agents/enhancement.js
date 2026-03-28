@@ -101,16 +101,20 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
     const linkedin  = socialRaw.match(/LINKEDIN:\s*(.+)/)?.[1]?.trim() || '';
 
     // ── Step 4: Write all results back to Notion ────────────────────────────
-    const props = {};
+    // Property names must match Content Catalog v2 schema exactly
+    const seoBlock = [
+      seoTitle    ? `SEO Title: ${seoTitle}`       : '',
+      seoSlug     ? `Slug: ${seoSlug}`             : '',
+      seoMeta     ? `Meta: ${seoMeta}`             : '',
+      seoKeywords ? `Keywords: ${seoKeywords}`     : '',
+    ].filter(Boolean).join('\n');
 
-    if (blogDraft)    props['📝 Blog Draft']  = { rich_text: [{ text: { content: blogDraft.substring(0, 2000) } }] };
-    if (seoTitle)     props['📰 SEO Title']   = { rich_text: [{ text: { content: seoTitle } }] };
-    if (seoMeta)      props['📝 SEO Meta']    = { rich_text: [{ text: { content: seoMeta } }] };
-    if (seoKeywords)  props['🔑 Keywords']    = { rich_text: [{ text: { content: seoKeywords } }] };
-    if (seoSlug)      props['🔗 Slug']        = { rich_text: [{ text: { content: seoSlug } }] };
-    if (twitter || instagram || linkedin) {
+    const props = {};
+    if (blogDraft) props['📝 Blog Draft']  = { rich_text: [{ text: { content: blogDraft.substring(0, 2000) } }] };
+    if (seoTitle)  props['📰 SEO Title']   = { rich_text: [{ text: { content: seoTitle } }] };
+    if (twitter || instagram || linkedin || seoBlock) {
       props['✂️ Short Form'] = { rich_text: [{ text: { content:
-        `Twitter:\n${twitter}\n\nInstagram:\n${instagram}\n\nLinkedIn:\n${linkedin}`
+        `${seoBlock}\n\nTwitter:\n${twitter}\n\nInstagram:\n${instagram}\n\nLinkedIn:\n${linkedin}`.trim()
       } }] };
     }
 
