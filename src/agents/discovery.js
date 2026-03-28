@@ -175,7 +175,7 @@ class DiscoveryAgent {
   }
 
   // ─── Main Run ───────────────────────────────────────────────────────────────
-  async run(batchSize = 10) {
+  async run(batchSize = 5) {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const allChannels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
@@ -228,7 +228,7 @@ class DiscoveryAgent {
       const score = await this.scoreContent(item.snippet.title, item.snippet.description, channel.category);
       await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({ title: item.snippet.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
       processed++;
-      if (score > channel.minScore) {
+      if (score > channel.minScore && approved < 3) {
         await this.writeToNotion({ id: videoId, title: item.snippet.title, description: item.snippet.description, url: `https://youtube.com/watch?v=${videoId}`, thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`, channelId: channel.id, publishedAt: item.snippet.publishedAt, score, sourceType: 'YouTube' }, channel, config);
         approved++;
       }
@@ -259,7 +259,7 @@ class DiscoveryAgent {
       await this.env.CONTENT_KV.put(key, JSON.stringify({ title: item.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
       processed++;
 
-      if (score > channel.minScore) {
+      if (score > channel.minScore && approved < 3) {
         const thumbnail = (item.description?.match(/<img[^>]+src=["']([^"']+)["']/i) || [])[1]
           || 'https://techfusionreport.github.io/graphics/tech_nb.png';
 
