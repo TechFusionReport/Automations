@@ -127,12 +127,14 @@ All rotated as of March 2026. Retrieve from Cloudflare KV, never from source fil
 
 ---
 
-## ⚠️ Known Open Issues (as of 2026-03-27)
+## ⚠️ Known Open Issues (as of 2026-03-28)
 - Repo still contains stale files needing cleanup: `techfusion-api/`, `techfusion-admin/`,
   `estate/`, `wrangler.toml.backup`, `wrangler-admin.toml`, old `.yaml`/`.py` scripts
 - `blog.html` index auto-population not yet working
-- End-to-end pipeline test not yet run (discovery → enhance → publish)
 - Inline DB view + button setup on TechFusion OS dashboard needs manual Notion UI setup
+- Enhancement agent writes blog draft to `📝 Blog Draft` property (2000 char limit due to
+  Notion rich_text cap) — full draft does not populate the toggle blocks in page content yet
+- Gemini model: uses `gemini-2.5-flash` (confirmed available for this API key as of 2026-03-28)
 
 ---
 
@@ -217,7 +219,7 @@ the solution applied, and the explicit next action. Be specific — vague entrie
 ---
 
 ## 🎯 Current Priority Order
-1. Run end-to-end pipeline test (one record: discovery → enhance → publish)
+1. ~~Run end-to-end pipeline test~~ ✅ Complete (2026-03-28)
 2. Clean up stale files from repo root and src/
 3. Fix blog.html index auto-population from posts.json
 4. Set up Content Queue linked DB view on TechFusion OS dashboard
