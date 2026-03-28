@@ -190,15 +190,6 @@ export default {
       return json(summary);
     });
 
-    // ── Temporary: list available Gemini models ────────────────────────────
-    router.get('/admin/gemini-models', async (req, env) => {
-      const config = JSON.parse(await env.CONTENT_KV.get('secrets') || '{}');
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${config.gemini_api_key}`);
-      const data = await res.json();
-      const names = (data.models || []).map(m => m.name);
-      return json({ count: names.length, models: names });
-    });
-
     // ── Status & health ────────────────────────────────────────────────────
     router.get('/status', async (req, env) => {
       const [lastDiscovery, lastEnhancePoll, lastPublishPoll, channels, creators] =
