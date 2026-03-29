@@ -60,6 +60,7 @@ Requirements:
 Write the full blog post in HTML (use <h2>, <p>, <ul>, <li> tags).`;
 
     const blogDraft = await this.callGemini(blogPrompt, secrets, 0.75);
+    if (!blogDraft || blogDraft.trim().length < 100) throw new Error('Gemini returned empty or insufficient blog draft');
 
     // ── Step 2: Generate SEO metadata ───────────────────────────────────────
     const seoPrompt = `Generate SEO metadata for this ${category} blog post.

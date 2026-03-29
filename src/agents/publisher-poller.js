@@ -155,7 +155,8 @@ export class PublisherPoller {
                 .filter(b => b.type === 'paragraph')
                 .map(b => b.paragraph?.rich_text?.map(r => r.text?.content || '').join('') || '')
                 .join('\n\n').trim();
-              if (content) return content;
+              // Skip placeholder text — only return if it looks like real content (>200 chars)
+              if (content && content.length > 200 && !content.includes('populates here after enhancement')) return content;
             }
           }
         }
