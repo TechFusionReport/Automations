@@ -166,10 +166,11 @@ All rotated as of March 2026. Retrieve from Cloudflare KV, never from source fil
 
 ---
 
-## ⚠️ Known Open Issues (as of 2026-03-28)
-- `blog.html` index auto-population not yet working
+## ⚠️ Known Open Issues (as of 2026-03-29)
 - Inline DB view + button setup on TechFusion OS dashboard needs manual Notion UI setup
 - `src/utils/` is empty — placeholder kept intentionally
+- 2 posts published with placeholder content (Griply Review, iPhone Air) — needs manual re-approval in Notion after re-enhancement
+- Enhancement writes blog draft to `📝 Blog Draft` property only (not page toggle blocks)
 
 ---
 
@@ -230,6 +231,8 @@ Page ID: `313bd080-de92-8159-bcee-c3fc4ed83462`
 ## 🎯 Current Priority Order
 1. ~~Run end-to-end pipeline test~~ ✅ Complete (2026-03-28)
 2. ~~Clean up stale files from repo root and src/~~ ✅ Complete (2026-03-28)
-3. Fix blog.html index auto-population from posts.json
-4. Set up Content Queue linked DB view on TechFusion OS dashboard
-5. Phase 2: n8n orchestration (Add Channel workflow, error notifications, cron management)
+3. ~~Fix blog.html index auto-population from posts.json~~ ✅ Complete (2026-03-29)
+4. ~~Add RSS sources to Creator DB~~ ✅ Complete (2026-03-29)
+5. ~~Fix publisher placeholder content bug~~ ✅ Complete (2026-03-29)
+6. Set up Content Queue linked DB view on TechFusion OS dashboard (manual Notion UI)
+7. Phase 2: n8n orchestration (Add Channel workflow, error notifications, cron management)
