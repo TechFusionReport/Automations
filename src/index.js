@@ -124,15 +124,18 @@ export default {
       return json({ status: 'creators refreshed' });
     });
 
-    // Apply Option D template blocks to existing Content Catalog v2 records that have none.
-    // Accepts: { cursor, batchSize (default 5, max 10), dryRun (default false) }
+    // Apply Option D template blocks to Content Catalog v2 records.
+    // Accepts: { cursor, batchSize (default 5, max 10), dryRun, force }
+    //   force=false (default): skip records that already have ANY blocks
+    //   force=true: skip only records that already have the ⚡ Option D header;
+    //               append template after legacy content — nothing is deleted
     // Returns: { processed, skipped, errors, nextCursor, hasMore }
     // Call repeatedly with nextCursor until hasMore = false.
     router.post('/admin/apply-template', async (req, env) => {
       const body = await req.json().catch(() => ({}));
-      const { cursor: startCursor, batchSize = 5, dryRun = false } = body;
+      const { cursor: startCursor, batchSize = 5, dryRun = false, force = false } = body;
 
-      const secrets   = await getSecrets(env);
+      const secrets    = await getSecrets(env);
       const token      = secrets.notion_token;
       const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
 
@@ -153,13 +156,25 @@ export default {
       for (const record of data.results) {
         const pageId = record.id;
         try {
-          // Skip records that already have content blocks
-          const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=3`, {
+          const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=10`, {
             headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
           });
+
           if (blocksRes.ok) {
             const blocks = await blocksRes.json();
-            if (blocks.results?.length > 0) { results.skipped++; continue; }
+            const existing = blocks.results || [];
+
+            if (!force) {
+              // Default: skip anything that already has blocks
+              if (existing.length > 0) { results.skipped++; continue; }
+            } else {
+              // Force: skip only if the ⚡ Option D header callout is already present
+              const hasOptionD = existing.some(b =>
+                b.type === 'callout' &&
+                b.callout?.rich_text?.some(r => r.text?.content?.includes('TECHFUSION REPORT'))
+              );
+              if (hasOptionD) { results.skipped++; continue; }
+            }
           }
 
           if (dryRun) { results.processed++; continue; }
@@ -172,8 +187,8 @@ export default {
             tags:     props?.['🔖 Tags']?.multi_select?.map(t => t.name) || []
           };
           const video     = {
-            url:        props?.['🎬 Video URL']?.url              || '',
-            sourceType: props?.Source?.multi_select?.[0]?.name   || 'YouTube'
+            url:        props?.['🎬 Video URL']?.url             || '',
+            sourceType: props?.Source?.multi_select?.[0]?.name  || 'YouTube'
           };
           const dateAdded = props?.['📅 Date Added']?.date?.start || new Date().toISOString().split('T')[0];
 
