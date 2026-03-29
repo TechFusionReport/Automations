@@ -124,6 +124,76 @@ export default {
       return json({ status: 'creators refreshed' });
     });
 
+    // Apply Option D template blocks to existing Content Catalog v2 records that have none.
+    // Accepts: { cursor, batchSize (default 5, max 10), dryRun (default false) }
+    // Returns: { processed, skipped, errors, nextCursor, hasMore }
+    // Call repeatedly with nextCursor until hasMore = false.
+    router.post('/admin/apply-template', async (req, env) => {
+      const body = await req.json().catch(() => ({}));
+      const { cursor: startCursor, batchSize = 5, dryRun = false } = body;
+
+      const secrets   = await getSecrets(env);
+      const token      = secrets.notion_token;
+      const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
+
+      const queryBody = { page_size: Math.min(batchSize, 10) };
+      if (startCursor) queryBody.start_cursor = startCursor;
+
+      const queryRes = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+        body: JSON.stringify(queryBody)
+      });
+      if (!queryRes.ok) throw new Error(`Notion query failed: ${await queryRes.text()}`);
+
+      const data    = await queryRes.json();
+      const results = { processed: 0, skipped: 0, errors: [], nextCursor: data.next_cursor || null, hasMore: data.has_more };
+      const agent   = new DiscoveryAgent(env);
+
+      for (const record of data.results) {
+        const pageId = record.id;
+        try {
+          // Skip records that already have content blocks
+          const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=3`, {
+            headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
+          });
+          if (blocksRes.ok) {
+            const blocks = await blocksRes.json();
+            if (blocks.results?.length > 0) { results.skipped++; continue; }
+          }
+
+          if (dryRun) { results.processed++; continue; }
+
+          const props     = record.properties;
+          const channel   = {
+            name:     'TechFusion Report',
+            category: props?.['🗂️ Category']?.select?.name  || 'Technology',
+            section:  props?.['🗂️ Section']?.select?.name   || 'Technology',
+            tags:     props?.['🔖 Tags']?.multi_select?.map(t => t.name) || []
+          };
+          const video     = {
+            url:        props?.['🎬 Video URL']?.url              || '',
+            sourceType: props?.Source?.multi_select?.[0]?.name   || 'YouTube'
+          };
+          const dateAdded = props?.['📅 Date Added']?.date?.start || new Date().toISOString().split('T')[0];
+
+          const templateBlocks = agent.buildTemplateBlocks(video, channel, dateAdded);
+
+          const appendRes = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+            body: JSON.stringify({ children: templateBlocks })
+          });
+          if (!appendRes.ok) throw new Error(`Append failed: ${await appendRes.text()}`);
+          results.processed++;
+        } catch (e) {
+          results.errors.push({ pageId, error: e.message });
+        }
+      }
+
+      return json(results);
+    });
+
     // ── Channel score leaderboard ──────────────────────────────────────────
     router.get('/admin/channel-scores', async (req, env) => {
       const list = await env.CONTENT_KV.list({ prefix: 'channel-score:' });
