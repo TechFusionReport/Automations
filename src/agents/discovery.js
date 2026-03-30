@@ -1,7 +1,8 @@
 // Discovery Agent — TechFusion Report
-// v6.1.0 — RSS processor implemented
-//           HackerNews trending discovery added (free, no API key)
-//           Source Type detection: YouTube (Channel ID) | RSS (Website field)
+// v6.2.0 — YouTube switched back to RSS feeds (zero quota cost)
+//           Gemini API key fix (reads from KV secrets, not env binding)
+//           config passed through all scoreContent calls
+//           RSS + HackerNews processors included
 
 const CONTENT_TYPE_MAP = {
   '|| Tech ||':          { section: 'Technology',    category: 'Technology' },
@@ -12,8 +13,9 @@ const CONTENT_TYPE_MAP = {
 };
 const DEFAULT_SECTION_CATEGORY = { section: 'Technology', category: 'Technology' };
 
-// ─── RSS XML Parser ──────────────────────────────────────────────────────────
-// Handles RSS 2.0 and Atom without any dependencies.
+// ─── RSS / Atom XML Parser ───────────────────────────────────────────────────
+// No dependencies — works in Cloudflare Workers runtime.
+// Handles RSS 2.0 (<item>) and Atom (<entry>) feed formats.
 function parseRSS(xml) {
   const items = [];
   const itemRegex = /<(?:item|entry)[\s>]([\s\S]*?)<\/(?:item|entry)>/gi;
@@ -33,21 +35,31 @@ function parseRSS(xml) {
       return m ? m[1].trim() : '';
     };
 
+    // Atom feeds use <link href="..."/> instead of <link>text</link>
     let link = get('link') || getAttr('link', 'href');
-    const title = get('title');
+    const title       = get('title');
     const description = get('description') || get('summary') || get('content');
-    const pubDate = get('pubDate') || get('published') || get('updated');
-    const guid = get('guid') || get('id') || link;
+    const pubDate     = get('pubDate') || get('published') || get('updated');
+    // YouTube RSS uses <yt:videoId> — extract it directly if present
+    const ytVideoId   = get('yt:videoId');
+    const guid        = get('guid') || get('id') || link;
 
-    if (title && link) items.push({ title, link, description, pubDate, guid });
+    if (title && (link || ytVideoId)) {
+      // Normalise YouTube watch URLs from the feed's <link> tag
+      if (ytVideoId && !link.includes('watch')) {
+        link = `https://www.youtube.com/watch?v=${ytVideoId}`;
+      }
+      items.push({ title, link, description, pubDate, guid, ytVideoId });
+    }
   }
   return items;
 }
 
 // ─── HackerNews API ──────────────────────────────────────────────────────────
+// Completely free — no API key required.
 async function fetchHackerNewsTop(minScore = 150, limit = 15) {
   const topRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
-  const ids = (await topRes.json()).slice(0, 20);
+  const ids = (await topRes.json()).slice(0, 50);
 
   const stories = await Promise.all(
     ids.map(async (id) => {
@@ -83,7 +95,10 @@ class DiscoveryAgent {
     const creatorDbId = config.creator_database_id || '0403b4267a54467a8bfd7dfb2cc4a7a8';
 
     while (hasMore) {
-      const body = { page_size: 100, filter: { property: 'Active', checkbox: { equals: true } } };
+      const body = {
+        page_size: 100,
+        filter: { property: 'Active', checkbox: { equals: true } }
+      };
       if (cursor) body.start_cursor = cursor;
 
       const res = await fetch(`https://api.notion.com/v1/databases/${creatorDbId}/query`, {
@@ -111,23 +126,28 @@ class DiscoveryAgent {
     return channels;
   }
 
+  // Source type detection:
+  //   Channel ID present → youtube (RSS feed via YouTube's free feed URL)
+  //   Website field present, no Channel ID → rss (Website = feed URL)
+  //   Neither → skip
   mapCreatorPageToChannel(page) {
     const props = page.properties;
     const channelId  = props['Channel ID']?.rich_text?.[0]?.text?.content?.trim();
-    const websiteUrl = props['Website']?.url?.trim() || props['Website']?.rich_text?.[0]?.text?.content?.trim();
-    const name = props['Content Creators']?.title?.[0]?.text?.content || 'Unknown';
+    const websiteUrl = props['Website']?.url?.trim()
+                    || props['Website']?.rich_text?.[0]?.text?.content?.trim();
+    const name        = props['Content Creators']?.title?.[0]?.text?.content || 'Unknown';
     const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
     const { section, category } = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
-    const tags = props['Tags']?.multi_select?.map(t => t.name) || [];
+    const tags     = props['Tags']?.multi_select?.map(t => t.name) || [];
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
-    const base = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
+    const base     = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
 
     if (channelId)  return { ...base, type: 'youtube', id: channelId };
     if (websiteUrl) return { ...base, type: 'rss', id: page.id, feedUrl: websiteUrl };
     return null;
   }
 
-  // ─── Creator Cache ──────────────────────────────────────────────────────────
+  // ─── Creator Cache (for Content Catalog relation linking) ──────────────────
   async loadCreatorCache(config) {
     if (this.creatorCache) return this.creatorCache;
     const cached = await this.env.CONTENT_KV.get('creator_cache');
@@ -142,14 +162,22 @@ class DiscoveryAgent {
       if (cursor) body.start_cursor = cursor;
       const res = await fetch(`https://api.notion.com/v1/databases/${creatorDbId}/query`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${config.notion_token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+        headers: {
+          'Authorization': `Bearer ${config.notion_token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
         body: JSON.stringify(body)
       });
       if (!res.ok) break;
       const data = await res.json();
       for (const page of data.results) {
         const channelId = this.extractChannelId(page);
-        if (channelId) creators.push({ id: page.id, channelId, name: page.properties['Content Creators']?.title?.[0]?.text?.content || 'Unknown' });
+        if (channelId) creators.push({
+          id: page.id,
+          channelId,
+          name: page.properties['Content Creators']?.title?.[0]?.text?.content || 'Unknown'
+        });
       }
       cursor = data.next_cursor;
       hasMore = data.has_more && !!cursor;
@@ -172,28 +200,22 @@ class DiscoveryAgent {
     await this.env.CONTENT_KV.delete('creator_cache');
     await this.env.CONTENT_KV.delete('creator_db_channels');
     this.creatorCache = null;
+    console.log('Creator cache invalidated');
   }
 
   // ─── Main Run ───────────────────────────────────────────────────────────────
-  async run(batchSize = 5) {
+  async run() {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
-    const allChannels = await this.loadChannelsFromCreatorDB(config);
+    const channels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
 
-    // Rotate through channels across cron runs to stay within subrequest limits
-    const offsetRaw = await this.env.CONTENT_KV.get('discovery_offset');
-    const offset = offsetRaw ? parseInt(offsetRaw) : 0;
-    const channels = allChannels.slice(offset, offset + batchSize);
-    const nextOffset = (offset + batchSize) >= allChannels.length ? 0 : offset + batchSize;
-    await this.env.CONTENT_KV.put('discovery_offset', String(nextOffset));
+    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
 
-    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [], batchOffset: offset, totalChannels: allChannels.length };
-
-    // HackerNews runs unconditionally — free trending signal layer
+    // HackerNews — runs unconditionally, free trending signal layer
     try {
       const hn = await this.processHackerNews(config);
       results.hackernews += hn.processed;
-      results.approved += hn.approved;
+      results.approved   += hn.approved;
     } catch (e) { results.errors.push({ channel: 'HackerNews', error: e.message }); }
 
     for (const channel of channels) {
@@ -201,38 +223,90 @@ class DiscoveryAgent {
         console.log(`Processing: ${channel.name} [${channel.type}]`);
         if (channel.type === 'youtube') {
           const r = await this.processYouTube(channel, config);
-          results.youtube += r.processed; results.approved += r.approved;
+          results.youtube  += r.processed;
+          results.approved += r.approved;
         } else if (channel.type === 'rss') {
           const r = await this.processRSS(channel, config);
-          results.rss += r.processed; results.approved += r.approved;
+          results.rss      += r.processed;
+          results.approved += r.approved;
         }
       } catch (e) {
-        console.error(`Error: ${channel.name}:`, e);
+        console.error(`Error processing ${channel.name}:`, e);
         results.errors.push({ channel: channel.name, error: e.message });
       }
     }
 
-    await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({ timestamp: new Date().toISOString(), channelCount: allChannels.length, batchOffset: offset, batchSize: channels.length, results }));
+    await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({
+      timestamp: new Date().toISOString(),
+      channelCount: channels.length,
+      results
+    }));
+
     return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  // ─── YouTube Processor ──────────────────────────────────────────────────────
+  // ─── YouTube Processor (RSS — zero quota cost) ──────────────────────────────
+  // Uses YouTube's free public RSS feed instead of the Data API.
+  // Feed URL pattern: https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxx
   async processYouTube(channel, config) {
-    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&maxResults=10&order=date&type=video&key=${config.youtube_api_key}`);
-    const data = await res.json();
+    const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channel.id}`;
+    let xml;
+
+    try {
+      const res = await fetch(feedUrl, {
+        headers: { 'User-Agent': 'TechFusionReport/1.0 RSS Reader' }
+      });
+      if (!res.ok) {
+        console.error(`YouTube RSS failed for ${channel.name}: HTTP ${res.status}`);
+        return { processed: 0, approved: 0 };
+      }
+      xml = await res.text();
+    } catch (e) {
+      console.error(`YouTube RSS fetch error for ${channel.name}:`, e.message);
+      return { processed: 0, approved: 0 };
+    }
+
+    const items = parseRSS(xml);
+    console.log(`YouTube RSS: ${items.length} videos from ${channel.name}`);
+
     let processed = 0, approved = 0;
 
-    for (const item of data.items || []) {
-      const videoId = item.id.videoId;
-      if (await this.env.CONTENT_KV.get(`video:${videoId}`)) continue;
-      const score = this.scoreContent(item.snippet.title, item.snippet.description, channel.category);
-      await this.env.CONTENT_KV.put(`video:${videoId}`, JSON.stringify({ title: item.snippet.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
+    for (const item of items) {
+      // Use yt:videoId from the feed directly, or parse from the watch URL
+      const videoId = item.ytVideoId
+        || (item.link?.match(/v=([a-zA-Z0-9_-]{11})/) || [])[1]
+        || (item.guid?.match(/([a-zA-Z0-9_-]{11})$/) || [])[1];
+
+      if (!videoId) continue;
+
+      const kvKey = `video:${videoId}`;
+      if (await this.env.CONTENT_KV.get(kvKey)) continue;
+
+      // FIX: pass config so scoreContent can read gemini_api_key from KV secrets
+      const score = await this.scoreContent(item.title, item.description, channel.category, config);
+
+      await this.env.CONTENT_KV.put(kvKey, JSON.stringify({
+        title: item.title, channel: channel.name, score, processedAt: Date.now()
+      }), { expirationTtl: 2592000 });
+
       processed++;
-      if (score > channel.minScore && approved < 3) {
-        await this.writeToNotion({ id: videoId, title: item.snippet.title, description: item.snippet.description, url: `https://youtube.com/watch?v=${videoId}`, thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`, channelId: channel.id, publishedAt: item.snippet.publishedAt, score, sourceType: 'YouTube' }, channel, config);
+
+      if (score > channel.minScore) {
+        await this.writeToNotion({
+          id: videoId,
+          title: item.title,
+          description: (item.description || '').replace(/<[^>]+>/g, '').slice(0, 500),
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          channelId: channel.id,
+          publishedAt: item.pubDate || new Date().toISOString(),
+          score,
+          sourceType: 'YouTube'
+        }, channel, config);
         approved++;
       }
     }
+
     return { processed, approved };
   }
 
@@ -241,10 +315,15 @@ class DiscoveryAgent {
     console.log(`RSS: fetching ${channel.name} — ${channel.feedUrl}`);
     let xml;
     try {
-      const res = await fetch(channel.feedUrl, { headers: { 'User-Agent': 'TechFusionReport/1.0 RSS Reader' } });
+      const res = await fetch(channel.feedUrl, {
+        headers: { 'User-Agent': 'TechFusionReport/1.0 RSS Reader' }
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       xml = await res.text();
-    } catch (e) { console.error(`RSS fetch failed for ${channel.name}:`, e.message); return { processed: 0, approved: 0 }; }
+    } catch (e) {
+      console.error(`RSS fetch failed for ${channel.name}:`, e.message);
+      return { processed: 0, approved: 0 };
+    }
 
     const items = parseRSS(xml);
     console.log(`RSS: ${items.length} items from ${channel.name}`);
@@ -255,11 +334,14 @@ class DiscoveryAgent {
       const key = `rss:${btoa(keyRaw).replace(/[^a-zA-Z0-9]/g, '').slice(0, 32)}`;
       if (await this.env.CONTENT_KV.get(key)) continue;
 
-      const score = this.scoreContent(item.title, item.description, channel.category);
-      await this.env.CONTENT_KV.put(key, JSON.stringify({ title: item.title, score, processedAt: Date.now() }), { expirationTtl: 2592000 });
+      // FIX: pass config
+      const score = await this.scoreContent(item.title, item.description, channel.category, config);
+      await this.env.CONTENT_KV.put(key, JSON.stringify({
+        title: item.title, score, processedAt: Date.now()
+      }), { expirationTtl: 2592000 });
       processed++;
 
-      if (score > channel.minScore && approved < 3) {
+      if (score > channel.minScore) {
         const thumbnail = (item.description?.match(/<img[^>]+src=["']([^"']+)["']/i) || [])[1]
           || 'https://techfusionreport.github.io/graphics/tech_nb.png';
 
@@ -288,14 +370,39 @@ class DiscoveryAgent {
     for (const story of stories) {
       const key = `hn:${story.id}`;
       if (await this.env.CONTENT_KV.get(key)) continue;
+
       const category = this.inferCategory(story.title);
-      const score = this.scoreContent(story.title, story.text || '', category);
-      await this.env.CONTENT_KV.put(key, JSON.stringify({ title: story.title, score, processedAt: Date.now() }), { expirationTtl: 604800 });
+      // FIX: pass config
+      const score = await this.scoreContent(story.title, story.text || '', category, config);
+
+      await this.env.CONTENT_KV.put(key, JSON.stringify({
+        title: story.title, score, processedAt: Date.now()
+      }), { expirationTtl: 604800 }); // 7-day TTL
+
       processed++;
 
       if (score > 65) {
-        const channel = { id: 'hackernews', notionPageId: null, name: 'Hacker News', section: 'Technology', category, tags: ['Trending', 'HackerNews'], featured: false, minScore: 65 };
-        await this.writeToNotion({ id: `hn-${story.id}`, title: story.title, description: `HN Score: ${story.score} | ${story.descendants || 0} comments`, url: story.url, thumbnail: 'https://techfusionreport.github.io/graphics/tech_nb.png', channelId: null, publishedAt: new Date(story.time * 1000).toISOString(), score, sourceType: 'HackerNews' }, channel, config);
+        const channel = {
+          id: 'hackernews',
+          notionPageId: null,
+          name: 'Hacker News',
+          section: 'Technology',
+          category,
+          tags: ['Trending', 'HackerNews'],
+          featured: false,
+          minScore: 65
+        };
+        await this.writeToNotion({
+          id: `hn-${story.id}`,
+          title: story.title,
+          description: `HN Score: ${story.score} | ${story.descendants || 0} comments`,
+          url: story.url,
+          thumbnail: 'https://techfusionreport.github.io/graphics/tech_nb.png',
+          channelId: null,
+          publishedAt: new Date(story.time * 1000).toISOString(),
+          score,
+          sourceType: 'HackerNews'
+        }, channel, config);
         approved++;
       }
     }
@@ -309,31 +416,57 @@ class DiscoveryAgent {
   }
 
   // ─── AI Scoring ─────────────────────────────────────────────────────────────
-  scoreContent(title, description, category) {
-    // Local keyword scorer — keeps discovery within subrequest limits.
-    // Gemini AI scoring happens in the enhancement stage, not here.
-    const text = `${title} ${description || ''}`.toLowerCase();
-    const signals = {
-      Technology:     ['ai', 'tech', 'software', 'hardware', 'app', 'android', 'iphone', 'google', 'apple', 'samsung', 'phone', 'laptop', 'review', 'vs', '2024', '2025', 'best', 'new', 'update', 'feature'],
-      Entertainment:  ['movie', 'film', 'tv', 'show', 'series', 'watch', 'stream', 'netflix', 'disney', 'trailer', 'review', 'react', 'music', 'song', 'album', 'release'],
-      Productivity:   ['productivity', 'notion', 'workflow', 'automate', 'tool', 'tips', 'tricks', 'hack', 'save time', 'efficiency', 'organize', 'system', 'notion', 'obsidian', 'excel', 'sheets'],
-    };
-    const keywords = signals[category] || signals.Technology;
-    const hits = keywords.filter(k => text.includes(k)).length;
-    // Base 50 + 5 per keyword hit, capped at 95
-    return Math.min(95, 50 + hits * 5);
+  // FIX: accepts config param and reads gemini_api_key from KV secrets.
+  // Falls back to env binding if present (future-proofing for direct env var setup).
+  async scoreContent(title, description, category, config = {}) {
+    const geminiKey = config.gemini_api_key || this.env.GEMINI_API_KEY;
+
+    if (!geminiKey) {
+      console.warn('scoreContent: no Gemini API key found — defaulting to 50');
+      return 50;
+    }
+
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: `Score 0-100 for ${category} tech blog relevance.\nTitle: "${title}"\nDescription: "${(description || '').slice(0, 500)}"\nReturn only the number.`
+              }]
+            }]
+          })
+        }
+      );
+      const data = await res.json();
+      if (data.error) {
+        console.error('Gemini scoring error:', JSON.stringify(data.error));
+        return 50;
+      }
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
+      const m = text.match(/\d+/);
+      return m ? parseInt(m[0]) : 50;
+    } catch (e) {
+      console.error('scoreContent exception:', e.message);
+      return 50;
+    }
   }
 
   // ─── Template Builder ────────────────────────────────────────────────────────
   buildTemplateBlocks(video, channel, dateAdded) {
-    const t = (text, bold = false, color = 'default') => ({ type: 'text', text: { content: text }, annotations: { bold, color } });
+    const t = (text, bold = false, color = 'default') => ({
+      type: 'text', text: { content: text }, annotations: { bold, color }
+    });
     return [
       { object: 'block', type: 'callout', callout: { rich_text: [t('⚡ TECHFUSION REPORT\n', true), t('Technology · Entertainment · Productivity\n', false, 'gray'), t(`${channel.category}`, false, 'blue'), t(` · ${channel.name} · ${dateAdded}`, false, 'gray')], icon: { emoji: '⚡' }, color: 'gray_background' } },
       { object: 'block', type: 'callout', callout: { rich_text: [t('🟡 PIPELINE STATUS: ', true), t('🟡 Pending Review', false, 'yellow'), t(` · Added ${dateAdded}`, false, 'gray')], icon: { emoji: '🟡' }, color: 'yellow_background' } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'column_list', column_list: { children: [
         { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'embed', embed: { url: video.url } }] } },
-        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Section: ', true), t(`${channel.section}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags||[]).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
+        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Section: ', true), t(`${channel.section}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
       ] } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI — AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
@@ -355,31 +488,41 @@ class DiscoveryAgent {
 
   // ─── Write to Notion ─────────────────────────────────────────────────────────
   async writeToNotion(video, channel, config) {
-    const creators = await this.loadCreatorCache(config);
-    const creator = creators.find(c => c.channelId === channel.id);
+    const creators  = await this.loadCreatorCache(config);
+    const creator   = creators.find(c => c.channelId === channel.id);
     const dateAdded = new Date().toISOString().split('T')[0];
 
+    console.log(`Writing to Notion: ${video.title}`);
+
     const properties = {
-      'Title': { title: [{ text: { content: video.title } }] },
-      '🎬 Video URL': { url: video.url },
-      '🆔 Video ID': { rich_text: [{ text: { content: video.id } }] },
-      '📺 Channel ID': { rich_text: [{ text: { content: channel.id || '' } }] },
-      '🖼️ Thumbnail': { url: video.thumbnail },
-      'Status': { status: { name: '🟡 Pending Review' } },
-      '🗂️ Category': { select: { name: channel.category } },
-      '🗂️ Section': { select: { name: channel.section } },
-      '🔖 Tags': { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
-      'Featured': { checkbox: false },
-      'Source': { multi_select: [{ name: video.sourceType || 'RSS' }] },
-      '📅 Date Added': { date: { start: dateAdded } }
+      'Title':           { title: [{ text: { content: video.title } }] },
+      '🎬 Video URL':    { url: video.url },
+      '🆔 Video ID':     { rich_text: [{ text: { content: video.id } }] },
+      '📺 Channel ID':   { rich_text: [{ text: { content: channel.id || '' } }] },
+      '🖼️ Thumbnail':   { url: video.thumbnail },
+      'Status':          { status: { name: '🟡 Pending Review' } },
+      '🗂️ Category':    { select: { name: channel.category } },
+      '🗂️ Section':     { select: { name: channel.section } },
+      '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
+      'Featured':        { checkbox: false },
+      'Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
+      '📅 Date Added':   { date: { start: dateAdded } }
     };
 
     if (creator) properties['Content Creator'] = { relation: [{ id: creator.id }] };
 
     const res = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${config.notion_token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
-      body: JSON.stringify({ parent: { database_id: config.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7' }, properties, children: this.buildTemplateBlocks(video, channel, dateAdded) })
+      headers: {
+        'Authorization': `Bearer ${config.notion_token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        parent: { database_id: config.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7' },
+        properties,
+        children: this.buildTemplateBlocks(video, channel, dateAdded)
+      })
     });
 
     if (!res.ok) throw new Error(`Notion API error: ${await res.text()}`);
