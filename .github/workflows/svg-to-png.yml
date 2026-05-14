@@ -1,0 +1,110 @@
+name: SVG to PNG
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_directory:
+        description: 'Directory containing SVG files to convert'
+        required: true
+        default: 'graphics/svg/'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  convert:
+    name: Convert SVGs to PNGs
+    runs-on: ubuntu-latest
+    if: github.ref_name == 'preview'
+
+    steps:
+      - name: Checkout preview
+        uses: actions/checkout@v4
+        with:
+          ref: preview
+
+      - name: Install Inkscape
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y inkscape
+
+      - name: Convert SVG files
+        id: convert
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_dir="${{ inputs.target_directory }}"
+          target_dir="${target_dir%/}"
+          output_dir="graphics/png"
+          mkdir -p "$output_dir"
+
+          summary_file="$RUNNER_TEMP/svg-to-png-summary.md"
+          converted_file="$RUNNER_TEMP/svg-to-png-converted.txt"
+          : > "$converted_file"
+
+          {
+            echo "## SVG to PNG conversion"
+            echo
+            echo "Target directory: \`$target_dir/\`"
+            echo "Output directory: \`$output_dir/\`"
+            echo
+          } > "$summary_file"
+
+          if [[ ! -d "$target_dir" ]]; then
+            echo "Target directory not found: $target_dir" >&2
+            {
+              echo "No files converted. Target directory was not found."
+            } >> "$summary_file"
+            cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          mapfile -d '' svg_files < <(find "$target_dir" -type f -name '*.svg' -print0 | sort -z)
+
+          if [[ "${#svg_files[@]}" -eq 0 ]]; then
+            {
+              echo "No SVG files found."
+            } >> "$summary_file"
+            cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "| SVG | PNG |" >> "$summary_file"
+          echo "| --- | --- |" >> "$summary_file"
+
+          for svg in "${svg_files[@]}"; do
+            relative_path="${svg#$target_dir/}"
+            png_path="$output_dir/${relative_path%.svg}.png"
+            mkdir -p "$(dirname "$png_path")"
+
+            # Inkscape exports at the SVG's intrinsic size, preserving maximum source resolution.
+            inkscape "$svg" --export-type=png --export-filename="$png_path"
+
+            echo "$png_path" >> "$converted_file"
+            echo "| \`$svg\` | \`$png_path\` |" >> "$summary_file"
+          done
+
+          cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+          echo "converted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit generated PNGs
+        if: steps.convert.outputs.converted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add graphics/png/
+
+          if git diff --cached --quiet; then
+            echo "No PNG changes to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git commit -m "Generate PNGs from SVG assets"
+          git push origin HEAD:preview
