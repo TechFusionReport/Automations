@@ -1,20 +1,40 @@
-// Discovery Agent — TechFusion Report
-// v6.2.0 — YouTube switched back to RSS feeds (zero quota cost)
-//           Gemini API key fix (reads from KV secrets, not env binding)
-//           config passed through all scoreContent calls
-//           RSS + HackerNews processors included
+// Discovery Agent - TechFusion Report
+// v6.2.1 - XtreamDroid RSS discovery fix
+//           Valid RSS feed URLs now win over malformed Channel ID values
+//           Catalog category values normalized to approved top-level schema
+//           KV dedup markers are written only after successful Notion writes
 
 const CONTENT_TYPE_MAP = {
   '|| Tech ||':          { section: 'Technology',    category: 'Technology' },
   '|| Entertainment ||': { section: 'Entertainment', category: 'Entertainment' },
   'Productivity':        { section: 'Productivity',  category: 'Productivity' },
-  'SmartPhone (GK)':    { section: 'Technology',    category: 'Mobile' },
-  'Movies':             { section: 'Entertainment', category: 'Movies' },
+  // Diagnosis: XtreamDroid can arrive through the SmartPhone (GK) type, but
+  // Content Catalog v2 only accepts Technology, Entertainment, or Productivity.
+  'SmartPhone (GK)':    { section: 'Technology',    category: 'Technology' },
+  'Movies':             { section: 'Entertainment', category: 'Entertainment' },
 };
 const DEFAULT_SECTION_CATEGORY = { section: 'Technology', category: 'Technology' };
+const VALID_CATALOG_CATEGORIES = new Set(['Technology', 'Entertainment', 'Productivity']);
+const YOUTUBE_CHANNEL_ID_RE = /^UC[a-zA-Z0-9_-]{20,}$/;
 
-// ─── RSS / Atom XML Parser ───────────────────────────────────────────────────
-// No dependencies — works in Cloudflare Workers runtime.
+function normalizeCatalogCategory(category) {
+  return VALID_CATALOG_CATEGORIES.has(category) ? category : DEFAULT_SECTION_CATEGORY.category;
+}
+
+function normalizeYouTubeChannelId(raw = '') {
+  const value = raw.trim();
+  if (!value) return '';
+  const fromUrl = value.match(/(?:youtube\.com\/channel\/|channel_id=)(UC[a-zA-Z0-9_-]{20,})/i);
+  if (fromUrl) return fromUrl[1];
+  return YOUTUBE_CHANNEL_ID_RE.test(value) ? value : '';
+}
+
+function looksLikeFeedUrl(url = '') {
+  return /^https?:\/\//i.test(url) && /(rss|atom|feed|feeds|\.xml)(?:[/?#]|$)/i.test(url);
+}
+
+// RSS / Atom XML Parser
+// No dependencies - works in Cloudflare Workers runtime.
 // Handles RSS 2.0 (<item>) and Atom (<entry>) feed formats.
 function parseRSS(xml) {
   const items = [];
@@ -40,7 +60,7 @@ function parseRSS(xml) {
     const title       = get('title');
     const description = get('description') || get('summary') || get('content');
     const pubDate     = get('pubDate') || get('published') || get('updated');
-    // YouTube RSS uses <yt:videoId> — extract it directly if present
+    // YouTube RSS uses <yt:videoId> - extract it directly if present
     const ytVideoId   = get('yt:videoId');
     const guid        = get('guid') || get('id') || link;
 
@@ -55,8 +75,8 @@ function parseRSS(xml) {
   return items;
 }
 
-// ─── HackerNews API ──────────────────────────────────────────────────────────
-// Completely free — no API key required.
+// HackerNews API
+// Completely free - no API key required.
 async function fetchHackerNewsTop(minScore = 150, limit = 15) {
   const topRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
   const ids = (await topRes.json()).slice(0, 50);
@@ -80,7 +100,7 @@ class DiscoveryAgent {
     this.creatorCache = null;
   }
 
-  // ─── Load Channels from Creator DB ─────────────────────────────────────────
+  // Load Channels from Creator DB
   async loadChannelsFromCreatorDB(config) {
     const cached = await this.env.CONTENT_KV.get('creator_db_channels');
     if (cached) {
@@ -127,27 +147,35 @@ class DiscoveryAgent {
   }
 
   // Source type detection:
-  //   Channel ID present → youtube (RSS feed via YouTube's free feed URL)
-  //   Website field present, no Channel ID → rss (Website = feed URL)
-  //   Neither → skip
+  //   Valid RSS/Atom feed URL present -> rss (prevents XtreamDroid feed being ignored)
+  //   Valid UC... Channel ID present -> youtube (YouTube feed URL expects channel_id=UCxxxxx)
+  //   Website field present, no valid Channel ID -> rss
+  //   Neither -> skip
   mapCreatorPageToChannel(page) {
     const props = page.properties;
     const channelId  = props['Channel ID']?.rich_text?.[0]?.text?.content?.trim();
     const websiteUrl = props['Website']?.url?.trim()
                     || props['Website']?.rich_text?.[0]?.text?.content?.trim();
+    const youtubeChannelId = normalizeYouTubeChannelId(channelId);
     const name        = props['Content Creators']?.title?.[0]?.text?.content || 'Unknown';
     const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
-    const { section, category } = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
+    const mapped = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
+    const section = mapped.section;
+    const category = normalizeCatalogCategory(mapped.category);
     const tags     = props['Tags']?.multi_select?.map(t => t.name) || [];
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
     const base     = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
 
-    if (channelId)  return { ...base, type: 'youtube', id: channelId };
-    if (websiteUrl) return { ...base, type: 'rss', id: page.id, feedUrl: websiteUrl };
+    // Diagnosis: a valid RSS feed plus a non-UC Channel ID previously routed to
+    // YouTube, built an invalid feed URL, and silently skipped the valid RSS path.
+    if (websiteUrl && (looksLikeFeedUrl(websiteUrl) || !youtubeChannelId)) {
+      return { ...base, type: 'rss', id: page.id, feedUrl: websiteUrl, sourceChannelId: channelId || '' };
+    }
+    if (youtubeChannelId) return { ...base, type: 'youtube', id: youtubeChannelId };
     return null;
   }
 
-  // ─── Creator Cache (for Content Catalog relation linking) ──────────────────
+  // Creator Cache (for Content Catalog relation linking)
   async loadCreatorCache(config) {
     if (this.creatorCache) return this.creatorCache;
     const cached = await this.env.CONTENT_KV.get('creator_cache');
@@ -203,7 +231,7 @@ class DiscoveryAgent {
     console.log('Creator cache invalidated');
   }
 
-  // ─── Main Run ───────────────────────────────────────────────────────────────
+  // Main Run
   async run() {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const channels = await this.loadChannelsFromCreatorDB(config);
@@ -211,7 +239,7 @@ class DiscoveryAgent {
 
     const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
 
-    // HackerNews — runs unconditionally, free trending signal layer
+    // HackerNews - runs unconditionally, free trending signal layer
     try {
       const hn = await this.processHackerNews(config);
       results.hackernews += hn.processed;
@@ -245,7 +273,7 @@ class DiscoveryAgent {
     return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  // ─── YouTube Processor (RSS — zero quota cost) ──────────────────────────────
+  // YouTube Processor (RSS - zero quota cost)
   // Uses YouTube's free public RSS feed instead of the Data API.
   // Feed URL pattern: https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxx
   async processYouTube(channel, config) {
@@ -285,12 +313,6 @@ class DiscoveryAgent {
       // FIX: pass config so scoreContent can read gemini_api_key from KV secrets
       const score = await this.scoreContent(item.title, item.description, channel.category, config);
 
-      await this.env.CONTENT_KV.put(kvKey, JSON.stringify({
-        title: item.title, channel: channel.name, score, processedAt: Date.now()
-      }), { expirationTtl: 2592000 });
-
-      processed++;
-
       if (score > channel.minScore) {
         await this.writeToNotion({
           id: videoId,
@@ -305,14 +327,22 @@ class DiscoveryAgent {
         }, channel, config);
         approved++;
       }
+
+      // Diagnosis: marking KV before Notion success caused schema failures to
+      // suppress the same item for 30 days. Only mark seen after success or a
+      // deliberate low-score rejection.
+      await this.env.CONTENT_KV.put(kvKey, JSON.stringify({
+        title: item.title, channel: channel.name, score, processedAt: Date.now()
+      }), { expirationTtl: 2592000 });
+      processed++;
     }
 
     return { processed, approved };
   }
 
-  // ─── RSS Processor ──────────────────────────────────────────────────────────
+  // RSS Processor
   async processRSS(channel, config) {
-    console.log(`RSS: fetching ${channel.name} — ${channel.feedUrl}`);
+    console.log(`RSS: fetching ${channel.name} - ${channel.feedUrl}`);
     let xml;
     try {
       const res = await fetch(channel.feedUrl, {
@@ -336,10 +366,6 @@ class DiscoveryAgent {
 
       // FIX: pass config
       const score = await this.scoreContent(item.title, item.description, channel.category, config);
-      await this.env.CONTENT_KV.put(key, JSON.stringify({
-        title: item.title, score, processedAt: Date.now()
-      }), { expirationTtl: 2592000 });
-      processed++;
 
       if (score > channel.minScore) {
         const thumbnail = (item.description?.match(/<img[^>]+src=["']([^"']+)["']/i) || [])[1]
@@ -358,11 +384,19 @@ class DiscoveryAgent {
         }, channel, config);
         approved++;
       }
+
+      // Diagnosis: KV dedup was written before the Notion create call. If
+      // XtreamDroid hit a Catalog v2 schema mismatch, every item looked
+      // already-seen on future runs until the 30-day TTL expired.
+      await this.env.CONTENT_KV.put(key, JSON.stringify({
+        title: item.title, score, processedAt: Date.now()
+      }), { expirationTtl: 2592000 });
+      processed++;
     }
     return { processed, approved };
   }
 
-  // ─── HackerNews Processor ───────────────────────────────────────────────────
+  // HackerNews Processor
   async processHackerNews(config) {
     const stories = await fetchHackerNewsTop(150, 15);
     let processed = 0, approved = 0;
@@ -374,12 +408,6 @@ class DiscoveryAgent {
       const category = this.inferCategory(story.title);
       // FIX: pass config
       const score = await this.scoreContent(story.title, story.text || '', category, config);
-
-      await this.env.CONTENT_KV.put(key, JSON.stringify({
-        title: story.title, score, processedAt: Date.now()
-      }), { expirationTtl: 604800 }); // 7-day TTL
-
-      processed++;
 
       if (score > 65) {
         const channel = {
@@ -405,6 +433,12 @@ class DiscoveryAgent {
         }, channel, config);
         approved++;
       }
+
+      await this.env.CONTENT_KV.put(key, JSON.stringify({
+        title: story.title, score, processedAt: Date.now()
+      }), { expirationTtl: 604800 }); // 7-day TTL
+
+      processed++;
     }
     return { processed, approved };
   }
@@ -415,14 +449,14 @@ class DiscoveryAgent {
     return 'Technology';
   }
 
-  // ─── AI Scoring ─────────────────────────────────────────────────────────────
+  // AI Scoring
   // FIX: accepts config param and reads gemini_api_key from KV secrets.
   // Falls back to env binding if present (future-proofing for direct env var setup).
   async scoreContent(title, description, category, config = {}) {
     const geminiKey = config.gemini_api_key || this.env.GEMINI_API_KEY;
 
     if (!geminiKey) {
-      console.warn('scoreContent: no Gemini API key found — defaulting to 50');
+      console.warn('scoreContent: no Gemini API key found - defaulting to 50');
       return 50;
     }
 
@@ -455,7 +489,7 @@ class DiscoveryAgent {
     }
   }
 
-  // ─── Template Builder ────────────────────────────────────────────────────────
+  // Template Builder
   buildTemplateBlocks(video, channel, dateAdded) {
     const t = (text, bold = false, color = 'default') => ({
       type: 'text', text: { content: text }, annotations: { bold, color }
@@ -469,7 +503,7 @@ class DiscoveryAgent {
         { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Section: ', true), t(`${channel.section}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
       ] } },
       { object: 'block', type: 'divider', divider: {} },
-      { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI — AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
+      { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI - AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'toggle', toggle: { rich_text: [t('⚡ TFR BLOG DRAFT', true)], children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [t('Blog post populates here after enhancement.', false, 'gray')] } }] } },
       { object: 'block', type: 'toggle', toggle: { rich_text: [t('✂️ SHORT FORM', true)], children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [t('Short-form content populates here.', false, 'gray')] } }] } },
@@ -486,10 +520,13 @@ class DiscoveryAgent {
     ];
   }
 
-  // ─── Write to Notion ─────────────────────────────────────────────────────────
+  // Write to Notion
   async writeToNotion(video, channel, config) {
     const creators  = await this.loadCreatorCache(config);
-    const creator   = creators.find(c => c.channelId === channel.id);
+    // Diagnosis: RSS channels use the Creator DB page id as channel.notionPageId,
+    // while YouTube channels use UC... ids. Check both so RSS records keep the
+    // Content Creator relation instead of relying on the YouTube-only id format.
+    const creator   = creators.find(c => c.id === channel.notionPageId || c.channelId === channel.id);
     const dateAdded = new Date().toISOString().split('T')[0];
 
     console.log(`Writing to Notion: ${video.title}`);
@@ -498,10 +535,10 @@ class DiscoveryAgent {
       'Title':           { title: [{ text: { content: video.title } }] },
       '🎬 Video URL':    { url: video.url },
       '🆔 Video ID':     { rich_text: [{ text: { content: video.id } }] },
-      '📺 Channel ID':   { rich_text: [{ text: { content: channel.id || '' } }] },
+      '📺 Channel ID':   { rich_text: [{ text: { content: channel.sourceChannelId || channel.id || '' } }] },
       '🖼️ Thumbnail':   { url: video.thumbnail },
       'Status':          { status: { name: '🟡 Pending Review' } },
-      '🗂️ Category':    { select: { name: channel.category } },
+      '🗂️ Category':    { select: { name: normalizeCatalogCategory(channel.category) } },
       '🗂️ Section':     { select: { name: channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
       'Featured':        { checkbox: false },
