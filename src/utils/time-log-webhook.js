@@ -2,7 +2,7 @@ const TIME_LOG_DATABASE_ID = 'c093ef06-f33c-4ab5-b44e-f2b49bf7ac78';
 const NOTION_API_BASE = 'https://api.notion.com/v1';
 const NOTION_VERSION = '2022-06-28';
 
-const NOTION_TOKEN = 'NOTION_TOKEN_FROM_ENV';
+const NOTION_TOKEN = "NOTION_TOKEN_FROM_ENV";
 // Set as NOTION_TOKEN environment variable in n8n
 
 const VALID_SOURCES = new Set(['TFR', 'Personal']);
