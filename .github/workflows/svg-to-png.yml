@@ -16,7 +16,6 @@ jobs:
   convert:
     name: Convert SVGs to PNGs
     runs-on: ubuntu-latest
-    if: github.ref_name == 'preview'
 
     steps:
       - name: Checkout preview
@@ -47,6 +46,8 @@ jobs:
           {
             echo "## SVG to PNG conversion"
             echo
+            echo "Workflow branch: \`${GITHUB_REF_NAME}\`"
+            echo "Checkout branch: \`preview\`"
             echo "Target directory: \`$target_dir/\`"
             echo "Output directory: \`$output_dir/\`"
             echo
