@@ -124,6 +124,37 @@ export default {
       return json({ status: 'creators refreshed' });
     });
 
+    // TEMPORARY DIAGNOSTIC — remove after use
+    router.post('/admin/diag/notion-token', async (req, env) => {
+      const secrets = await getSecrets(env);
+      const token = secrets.notion_token || '';
+      const masked = token.length > 14
+        ? token.slice(0, 10) + '...' + token.slice(-4)
+        : token ? '[too short to mask]' : '[missing]';
+      const notionRes = await fetch(
+        'https://api.notion.com/v1/databases/0403b4267a54467a8bfd7dfb2cc4a7a8/query',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Notion-Version': '2022-06-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ page_size: 1 }),
+        }
+      );
+      const body = await notionRes.json();
+      const firstTitle = body.results?.[0]?.properties?.['Content Creators']?.title?.[0]?.plain_text ?? null;
+      return json({
+        token_masked: masked,
+        token_prefix: token.slice(0, 4),
+        notion_status: notionRes.status,
+        notion_ok: notionRes.ok,
+        first_record_title: firstTitle,
+        error: notionRes.ok ? null : body.message ?? body,
+      });
+    });
+
     // Apply Option D template blocks to Content Catalog v2 records.
     // Accepts: { cursor, batchSize (default 5, max 10), dryRun, force }
     //   force=false (default): skip records that already have ANY blocks
