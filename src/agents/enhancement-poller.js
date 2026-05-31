@@ -117,11 +117,13 @@ export class EnhancementPoller {
 
     const agent = new EnhancementAgent(this.env);
     const result = await agent.start({
-      notionPageId: pageId,
-      videoUrl: props['🎬 Video URL']?.url,
-      category: props['🗂️ Category']?.select?.name,
-      section:  props['🗂️ Section']?.select?.name,
-      tags:     props['🔖 Tags']?.multi_select?.map(t => t.name) || []
+      notionPageId:      pageId,
+      videoUrl:          props['🎬 Video URL']?.url,
+      category:          props['🗂️ Category']?.select?.name,
+      section:           props['🗂️ Section']?.select?.name,
+      tags:              props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
+      title:             props['Title']?.title?.[0]?.text?.content || '',
+      videoId:           props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
     });
 
     // Mark as Draft Generated on success
@@ -132,7 +134,7 @@ export class EnhancementPoller {
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   async setStatus(pageId, statusName, token) {
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -143,22 +145,38 @@ export class EnhancementPoller {
         properties: { 'Status': { status: { name: statusName } } }
       })
     });
+    if (!res.ok) {
+      // Log but don't throw — a status update failure is serious but shouldn't mask
+      // the underlying error on the record.
+      console.error(`setStatus failed for ${pageId} (tried "${statusName}"): ${await res.text()}`);
+    }
   }
 
   async writeError(pageId, errorMessage, token) {
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      body: JSON.stringify({
-        properties: {
-          'Status':        { status: { name: '❌ Errors' } },
-          '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
-        }
-      })
-    });
+    // Update status first, independently from the error message write.
+    // If ⚠️ Last Error doesn't exist as a Notion property the combined PATCH
+    // would fail and the status would never move to error — so we separate them.
+    await this.setStatus(pageId, '❌ Errors', token);
+
+    try {
+      const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        body: JSON.stringify({
+          properties: {
+            '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
+          }
+        })
+      });
+      if (!res.ok) {
+        console.warn(`writeError: could not write error message property for ${pageId}: ${await res.text()}`);
+      }
+    } catch (e) {
+      console.warn(`writeError: error message PATCH threw for ${pageId}:`, e.message);
+    }
   }
 }
