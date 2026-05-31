@@ -142,7 +142,9 @@ class DiscoveryAgent {
     }
 
     await this.env.CONTENT_KV.put('creator_db_channels', JSON.stringify(channels), { expirationTtl: 300 });
-    console.log(`Loaded ${channels.length} active channels from Creator DB`);
+    const ytCount  = channels.filter(c => c.type === 'youtube').length;
+    const rssCount = channels.filter(c => c.type === 'rss').length;
+    console.log(`Loaded ${channels.length} active channels from Creator DB (youtube=${ytCount}, rss=${rssCount})`);
     return channels;
   }
 
@@ -166,12 +168,31 @@ class DiscoveryAgent {
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
     const base     = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
 
+    // ── DIAGNOSTIC LOGGING ──────────────────────────────────────────────────
+    // JSON.stringify exposes hidden whitespace/encoding differences in content type strings.
+    const feedCheck = looksLikeFeedUrl(websiteUrl || '');
+    console.log(
+      `[mapChannel] ${JSON.stringify(name)}` +
+      ` | channelId=${JSON.stringify(channelId ?? null)}` +
+      ` | websiteUrl=${JSON.stringify(websiteUrl ?? null)}` +
+      ` | contentTypes=${JSON.stringify(contentTypes)}` +
+      ` | contentTypeMapHit=${JSON.stringify(CONTENT_TYPE_MAP[contentTypes[0]] ? contentTypes[0] : null)}` +
+      ` | looksLikeFeed=${feedCheck}` +
+      ` | youtubeChannelId=${JSON.stringify(youtubeChannelId || null)}`
+    );
+    // ────────────────────────────────────────────────────────────────────────
+
     // Diagnosis: a valid RSS feed plus a non-UC Channel ID previously routed to
     // YouTube, built an invalid feed URL, and silently skipped the valid RSS path.
-    if (websiteUrl && (looksLikeFeedUrl(websiteUrl) || !youtubeChannelId)) {
+    if (websiteUrl && (feedCheck || !youtubeChannelId)) {
+      console.log(`[mapChannel] ${JSON.stringify(name)} → rss | feedUrl=${JSON.stringify(websiteUrl)}`);
       return { ...base, type: 'rss', id: page.id, feedUrl: websiteUrl, sourceChannelId: channelId || '' };
     }
-    if (youtubeChannelId) return { ...base, type: 'youtube', id: youtubeChannelId };
+    if (youtubeChannelId) {
+      console.log(`[mapChannel] ${JSON.stringify(name)} → youtube | channelId=${youtubeChannelId}`);
+      return { ...base, type: 'youtube', id: youtubeChannelId };
+    }
+    console.log(`[mapChannel] ${JSON.stringify(name)} → null (skipped — no valid websiteUrl or youtubeChannelId)`);
     return null;
   }
 
@@ -236,6 +257,10 @@ class DiscoveryAgent {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const channels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
+
+    const ytCount  = channels.filter(c => c.type === 'youtube').length;
+    const rssCount = channels.filter(c => c.type === 'rss').length;
+    console.log(`[run] channel type breakdown: youtube=${ytCount}, rss=${rssCount}, total=${channels.length}`);
 
     const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
 
