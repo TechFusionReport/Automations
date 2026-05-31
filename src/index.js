@@ -308,8 +308,8 @@ export default {
       if (payload.ref === 'refs/heads/main' && payload.commits) {
         for (const commit of payload.commits) {
           if (commit.message.includes('[refresh-channels]')) {
-            await new DiscoveryAgent(env).loadConfig();
-            console.log('Channels refreshed via GitHub webhook');
+            await new DiscoveryAgent(env).invalidateCreatorCache();
+            console.log('Creator cache invalidated via GitHub webhook');
           }
         }
       }
