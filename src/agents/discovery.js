@@ -1,5 +1,8 @@
 // Discovery Agent - TechFusion Report
-// v6.2.1 - XtreamDroid RSS discovery fix
+// v6.3.0 - Batch discovery to stay under Cloudflare subrequest limit
+//           BATCH_SIZE=8 with KV offset rotation replaces full-channel-list
+//           processing that was hitting the 50-subrequest ceiling per invocation.
+//           v6.2.1 - XtreamDroid RSS discovery fix
 //           Valid RSS feed URLs now win over malformed Channel ID values
 //           Catalog category values normalized to approved top-level schema
 //           KV dedup markers are written only after successful Notion writes
@@ -253,16 +256,26 @@ class DiscoveryAgent {
   }
 
   // Main Run
+  // Processes channels in batches of BATCH_SIZE per invocation to stay under
+  // Cloudflare Workers' 50-subrequest limit. KV offset rotates automatically
+  // so all channels are covered across multiple 6-hour cron runs.
   async run() {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const channels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
 
-    const ytCount  = channels.filter(c => c.type === 'youtube').length;
-    const rssCount = channels.filter(c => c.type === 'rss').length;
-    console.log(`[run] channel type breakdown: youtube=${ytCount}, rss=${rssCount}, total=${channels.length}`);
+    const BATCH_SIZE = 8;
+    const offsetRaw = await this.env.CONTENT_KV.get('discovery_offset');
+    const offset = parseInt(offsetRaw || '0');
+    const batch = channels.slice(offset, offset + BATCH_SIZE);
+    const nextOffset = (offset + BATCH_SIZE) >= channels.length ? 0 : offset + BATCH_SIZE;
+    await this.env.CONTENT_KV.put('discovery_offset', String(nextOffset));
 
-    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
+    const ytCount  = batch.filter(c => c.type === 'youtube').length;
+    const rssCount = batch.filter(c => c.type === 'rss').length;
+    console.log(`[run] batch offset=${offset} size=${batch.length} youtube=${ytCount} rss=${rssCount} total=${channels.length}`);
+
+    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [], offset, nextOffset };
 
     // HackerNews - runs unconditionally, free trending signal layer
     try {
@@ -271,7 +284,7 @@ class DiscoveryAgent {
       results.approved   += hn.approved;
     } catch (e) { results.errors.push({ channel: 'HackerNews', error: e.message }); }
 
-    for (const channel of channels) {
+    for (const channel of batch) {
       try {
         console.log(`Processing: ${channel.name} [${channel.type}]`);
         if (channel.type === 'youtube') {
@@ -292,6 +305,9 @@ class DiscoveryAgent {
     await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({
       timestamp: new Date().toISOString(),
       channelCount: channels.length,
+      batchSize: batch.length,
+      offset,
+      nextOffset,
       results
     }));
 
