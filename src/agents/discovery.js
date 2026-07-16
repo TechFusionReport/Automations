@@ -337,7 +337,8 @@ class DiscoveryAgent {
       return { processed: 0, approved: 0 };
     }
 
-    const items = parseRSS(xml);
+    const MAX_ITEMS_PER_CHANNEL = 10;
+    const items = parseRSS(xml).slice(0, MAX_ITEMS_PER_CHANNEL);
     console.log(`YouTube RSS: ${items.length} videos from ${channel.name}`);
 
     let processed = 0, approved = 0;
@@ -398,9 +399,9 @@ class DiscoveryAgent {
       return { processed: 0, approved: 0 };
     }
 
-    const items = parseRSS(xml);
+    const MAX_ITEMS_PER_CHANNEL = 10;
+    const items = parseRSS(xml).slice(0, MAX_ITEMS_PER_CHANNEL);
     console.log(`RSS: ${items.length} items from ${channel.name}`);
-    let processed = 0, approved = 0;
 
     for (const item of items) {
       const keyRaw = (item.guid || item.link).slice(-40);
