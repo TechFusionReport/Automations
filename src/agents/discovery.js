@@ -401,6 +401,7 @@ class DiscoveryAgent {
 
     const MAX_ITEMS_PER_CHANNEL = 10;
     const items = parseRSS(xml).slice(0, MAX_ITEMS_PER_CHANNEL);
+    let processed = 0, approved = 0;
     console.log(`RSS: ${items.length} items from ${channel.name}`);
 
     for (const item of items) {
