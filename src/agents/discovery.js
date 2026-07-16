@@ -1,11 +1,10 @@
 // Discovery Agent - TechFusion Report
-// v6.3.0 - Batch discovery to stay under Cloudflare subrequest limit
-//           BATCH_SIZE=8 with KV offset rotation replaces full-channel-list
-//           processing that was hitting the 50-subrequest ceiling per invocation.
-//           v6.2.1 - XtreamDroid RSS discovery fix
-//           Valid RSS feed URLs now win over malformed Channel ID values
-//           Catalog category values normalized to approved top-level schema
-//           KV dedup markers are written only after successful Notion writes
+// v6.4.0 - Sequential HackerNews fetch to stop subrequest budget exhaustion
+//          fetchHackerNewsTop() previously fired Promise.all on up to 50
+//          parallel item fetches BEFORE the channel batch loop ran, eating
+//          the entire Workers subrequest budget and failing every channel
+//          in the batch with "Too many subrequests by single Worker invocation."
+//          Now fetches sequentially and stops early once enough stories qualify.
 
 const CONTENT_TYPE_MAP = {
   '|| Tech ||':          { section: 'Technology',    category: 'Technology' },
@@ -80,21 +79,24 @@ function parseRSS(xml) {
 
 // HackerNews API
 // Completely free - no API key required.
-async function fetchHackerNewsTop(minScore = 150, limit = 15) {
+
+async function fetchHackerNewsTop(minScore = 150, limit = 15, maxChecked = 20) {
   const topRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
-  const ids = (await topRes.json()).slice(0, 50);
+  const ids = (await topRes.json()).slice(0, maxChecked);
 
-  const stories = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const res = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
-        const story = await res.json();
-        return story?.score >= minScore && story?.url ? story : null;
-      } catch { return null; }
-    })
-  );
+  const stories = [];
+  for (const id of ids) {
+    if (stories.length >= limit) break;
+    try {
+      const res = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+      const story = await res.json();
+      if (story?.score >= minScore && story?.url) stories.push(story);
+    } catch {
+      // skip and keep going - one bad item shouldn't kill the whole pass
+    }
+  }
 
-  return stories.filter(Boolean).sort((a, b) => b.score - a.score).slice(0, limit);
+  return stories.sort((a, b) => b.score - a.score);
 }
 
 class DiscoveryAgent {
