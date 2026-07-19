@@ -1,0 +1,14 @@
+name = "link-redirect"
+main = "link-redirect.js"
+compatibility_date = "2026-07-19"
+
+# Route the Worker to the subdomain (adjust zone_name if needed)
+routes = [
+  { pattern = "notion.techfusionreport.com/*", zone_name = "techfusionreport.com" }
+]
+
+# KV namespace binding for slug -> destination URL lookups.
+# Replace "id" with the actual namespace ID after creating it (step 3 below).
+kv_namespaces = [
+  { binding = "LINKS", id = "REPLACE_WITH_KV_NAMESPACE_ID" }
+]
