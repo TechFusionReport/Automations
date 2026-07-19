@@ -89,3 +89,23 @@ The existing `tasker-fix` KV entry (added directly via Cloudflare dashboard, pre
 - Create a test row with a throwaway slug, flip to `Ready`, confirm: KV entry appears, Notion row flips to `Published` with sanitized slug, and `notion.techfusionreport.com/<slug>` 302s correctly.
 - Test validation: a row with an empty URL, and a row with a slug containing invalid characters — confirm both land in `Status = Error` with an appropriate `Last Error` and no KV write occurs.
 - Test failure path: temporarily point the HTTP Request node at a bad Cloudflare namespace ID or invalid token, confirm `Status = Error` + Discord notification fire correctly, then revert.
+
+## Axiom Discord command: `!link`
+
+Second entry point into the same system, added to the existing **Axiom Ops Bot** n8n workflow (`JNNqAf1f4NZ6Qs1D`). No changes to the discord.js container — it already forwards raw messages to the workflow's webhook and relays back whatever `Respond to Discord` returns.
+
+- `Command Router` (switch node) gets a new case: `$json.command equals "!link"` → new `Link Handler` code node → `Respond to Discord`. Same wiring pattern as the existing `Scan Handler` / `Article Handler` branches.
+- `Link Handler` parses `args` (already split from the command by the existing `Parse Command` node):
+  - **One token** (`!link tasker-fix`) → **lookup**: GET the Cloudflare KV value directly for that slug (`GET /accounts/{account_id}/storage/kv/namespaces/1359ef24efa64810b23651a001542be5/values/{slug}`) → reply with the URL, or "no redirect found for that slug." Queries KV directly (not Notion) since KV is ground truth for what's actually live.
+  - **Two+ tokens** (`!link tasker-fix https://...`) → **create**: first token is slug, remainder is URL → create a page in the Notion Redirects DB via the Notion API with that `Slug`/`URL` and `Status = Ready` → reply immediately with "Submitted — will go live in a few seconds."
+- Creation does not duplicate the validation logic above — it just creates the `Ready` row and lets the existing Notion Database Automation → sync workflow validate/sanitize/write to KV, exactly as if the row had been typed in by hand. The existing failure path (`Status = Error` + Discord notification) already covers bad `!link` input; that notification just won't be tied back to the specific Discord command that caused it.
+
+## Notion page instructions (toggle block)
+
+The Redirects DB page gets a collapsible Notion toggle block near the top (above the table view) so the schema/workflow doesn't need to be re-explained later. Contents:
+
+> **▸ ℹ️ How this works — read before adding a redirect**
+> - Add a redirect: fill in `Slug` (lowercase, hyphens only — spaces/capitals get auto-cleaned) and `URL`, then set `Status` to **Ready**. It goes live within seconds.
+> - `Status` meanings: **Draft** = not ready yet, **Ready** = triggers publishing, **Published** = live at `notion.techfusionreport.com/<slug>`, **Error** = check `Last Error`, fix the row, and flip back to Ready to retry.
+> - Editing or deleting a row that's already **Published** does *not* update the live redirect automatically (v1 limitation) — that still needs a manual edit in the Cloudflare KV dashboard.
+> - Discord shortcut, from the Axiom bot: `!link <slug>` looks up an existing redirect; `!link <slug> <url>` creates a new one the same way as adding a row here.
