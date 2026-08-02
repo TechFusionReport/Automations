@@ -1,4 +1,9 @@
 // Discovery Agent - TechFusion Report
+// v6.5.0 - Category/Subcategory now read from the Content Creator DB's own
+//          Category/Subcategory select properties when set (mapCreatorPageToChannel),
+//          instead of always deriving Category from Content Type and Subcategory
+//          from the broad section name. Falls back to the old heuristic for any
+//          creator that hasn't been backfilled yet.
 // v6.4.0 - Sequential HackerNews fetch to stop subrequest budget exhaustion
 //          fetchHackerNewsTop() previously fired Promise.all on up to 50
 //          parallel item fetches BEFORE the channel batch loop ran, eating
@@ -168,10 +173,17 @@ class DiscoveryAgent {
     const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
     const mapped = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
     const section = mapped.section;
-    const category = normalizeCatalogCategory(mapped.category);
+    // Prefer the Creator DB's own Category/Subcategory selects (added Aug 2026
+    // so Catalog v2 records can auto-populate from the creator instead of the
+    // Content Type heuristic below). Falls back to the heuristic until a
+    // creator has been backfilled with its own Category/Subcategory.
+    const creatorCategory    = props['Category']?.select?.name;
+    const creatorSubcategory = props['Subcategory']?.select?.name;
+    const category    = normalizeCatalogCategory(creatorCategory || mapped.category);
+    const subcategory = creatorSubcategory || section;
     const tags     = props['Tags']?.multi_select?.map(t => t.name) || [];
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
-    const base     = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
+    const base     = { notionPageId: page.id, name, section, category, subcategory, tags, featured: false, minScore };
 
     // ── DIAGNOSTIC LOGGING ──────────────────────────────────────────────────
     // JSON.stringify exposes hidden whitespace/encoding differences in content type strings.
@@ -584,7 +596,7 @@ class DiscoveryAgent {
       '🖼️ Thumbnail':   { url: video.thumbnail },
       'Status':          { status: { name: '🟡 Pending Review' } },
       'Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
-'Subcategory':    { select: { name: channel.section } },
+      'Subcategory':    { select: { name: channel.subcategory || channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
       'Featured':        { checkbox: false },
       'Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
