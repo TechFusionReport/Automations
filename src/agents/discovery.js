@@ -557,7 +557,7 @@ class DiscoveryAgent {
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'column_list', column_list: { children: [
         { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'embed', embed: { url: video.url } }] } },
-        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Section: ', true), t(`${channel.section}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
+        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Subcategory: ', true), t(`${subcategory}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
       ] } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI - AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
@@ -571,7 +571,7 @@ class DiscoveryAgent {
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Thumbnail confirmed')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Embed working')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('SEO slug set')], checked: false } },
-        { object: 'block', type: 'to_do', to_do: { rich_text: [t('Category & Section tagged')], checked: false } },
+        { object: 'block', type: 'to_do', to_do: { rich_text: [t('Category & Subcategory tagged')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Blog draft reviewed')], checked: false } }
       ] } }
     ];
@@ -598,7 +598,7 @@ class DiscoveryAgent {
       '🗂️ Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
       '🗂️ Subcategory':    { select: { name: channel.subcategory || channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
-      'Featured':        { checkbox: false },
+      '⭐️ Featured':        { checkbox: false },
       '📡 Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
       '📅 Date Added':   { date: { start: dateAdded } }
     };
