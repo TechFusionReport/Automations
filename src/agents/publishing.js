@@ -18,14 +18,15 @@ export class PublishingAgent {
     return raw ? JSON.parse(raw) : {};
   }
 
-  async publish({ notionPageId, title, content, category, section, tags, featured = false }) {
+  async publish({ notionPageId, title, content, category, section, tags, featured = false, seoSlug = null, seoMeta = null }) {
     const secrets = await this.getSecrets();
     const date    = new Date().toISOString().split('T')[0];
-    const slug    = this.createSlug(title);
+    const slug    = seoSlug || this.createSlug(title);
+
 
     const metadata = {
       title,
-      description: this.generateMetaDescription(content),
+      description: seoMeta || this.generateMetaDescription(content),
       date,
       slug,
       category: category || 'General',
