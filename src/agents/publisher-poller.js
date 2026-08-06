@@ -120,7 +120,7 @@ export class PublisherPoller {
       category:  props['🗂️ Category']?.select?.name  || 'General',
       section:   props['🗂️ Subcategory']?.select?.name   || 'Technology',
       tags:      props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
-      featured:  props.Featured?.checkbox             || false,
+      featured:  props['⭐ Featured']?.checkbox             || false,
       videoUrl:  props['🎬 Video URL']?.url           || null,
       thumbnail: props['🖼️ Thumbnail']?.url          || null
     });
