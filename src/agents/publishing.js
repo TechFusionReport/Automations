@@ -6,6 +6,13 @@ export class PublishingAgent {
     this.affiliateInserter = new AffiliateInserter();
   }
 
+   createSlug(title) {
+    return title.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 60);
+  }
+
   sanitizeSlug(rawSlug) {
     if (!rawSlug) return null;
     const cleaned = rawSlug.toLowerCase()
