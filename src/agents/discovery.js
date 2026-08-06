@@ -557,7 +557,7 @@ class DiscoveryAgent {
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'column_list', column_list: { children: [
         { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'embed', embed: { url: video.url } }] } },
-        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Subcategory: ', true), t(`${subcategory}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
+        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Subcategory: ', true), t(`${channel.subcategory}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
       ] } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI - AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
