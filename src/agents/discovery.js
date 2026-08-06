@@ -595,15 +595,15 @@ class DiscoveryAgent {
       '📺 Channel ID':   { rich_text: [{ text: { content: channel.sourceChannelId || channel.id || '' } }] },
       '🖼️ Thumbnail':   { url: video.thumbnail },
       'Status':          { status: { name: '🟡 Pending Review' } },
-      'Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
-      'Subcategory':    { select: { name: channel.subcategory || channel.section } },
+      '🗂️ Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
+      '🗂️ Subcategory':    { select: { name: channel.subcategory || channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
       'Featured':        { checkbox: false },
-      'Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
+      '📡 Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
       '📅 Date Added':   { date: { start: dateAdded } }
     };
 
-    if (creator) properties['Content Creator'] = { relation: [{ id: creator.id }] };
+    if (creator) properties['👤 Content Creator'] = { relation: [{ id: creator.id }] };
 
     const res = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',
