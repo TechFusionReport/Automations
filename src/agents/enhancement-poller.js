@@ -120,7 +120,7 @@ export class EnhancementPoller {
       notionPageId:      pageId,
       videoUrl:          props['🎬 Video URL']?.url,
       category:          props['🗂️ Category']?.select?.name,
-      section:           props['🗂️ Section']?.select?.name,
+      section:           props['🗂️ Subcategory']?.select?.name,
       tags:              props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
       title:             props['Title']?.title?.[0]?.text?.content || '',
       videoId:           props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
