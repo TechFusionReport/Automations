@@ -241,6 +241,8 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
     const props = {};
     if (blogDraft) props['📝 Blog Draft'] = { rich_text: splitRichText(blogDraft) };
     if (seoTitle)  props['📰 SEO Title']  = { rich_text: [{ text: { content: seoTitle } }] };
+    if (seoSlug)   props['📰 SEO Slug']   = { rich_text: [{ text: { content: seoSlug } }] };
+    if (seoMeta)   props['📰 SEO Meta']   = { rich_text: [{ text: { content: seoMeta } }] };
     if (twitter || instagram || linkedin || seoBlock) {
       props['✂️ Short Form'] = { rich_text: splitRichText(
         `${seoBlock}\n\nTwitter:\n${twitter}\n\nInstagram:\n${instagram}\n\nLinkedIn:\n${linkedin}`.trim()
