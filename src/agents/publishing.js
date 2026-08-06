@@ -6,13 +6,15 @@ export class PublishingAgent {
     this.affiliateInserter = new AffiliateInserter();
   }
 
-  createSlug(title) {
-    return title.toLowerCase()
+  sanitizeSlug(rawSlug) {
+    if (!rawSlug) return null;
+    const cleaned = rawSlug.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
       .substring(0, 60);
+    return cleaned || null; // guard against a slug that sanitizes to empty
   }
-
+  
   async getSecrets() {
     const raw = await this.env.CONTENT_KV.get('secrets');
     return raw ? JSON.parse(raw) : {};
@@ -21,8 +23,7 @@ export class PublishingAgent {
   async publish({ notionPageId, title, content, category, section, tags, featured = false, seoSlug = null, seoMeta = null }) {
     const secrets = await this.getSecrets();
     const date    = new Date().toISOString().split('T')[0];
-    const slug    = seoSlug || this.createSlug(title);
-
+   const slug    = this.sanitizeSlug(seoSlug) || this.createSlug(title);
 
     const metadata = {
       title,
