@@ -22,6 +22,7 @@ export const CATALOG_PROPERTIES = Object.freeze({
 export const CATALOG_STATUS = Object.freeze({
   notStarted: 'Not started',
   pendingReview: '🟡 Pending Review',
+  transcriptionApproved: '✅ Transcription Approved',
   inProgress: 'In progress',
   draftGenerated: 'Draft Generated',
   transcriptionApproval: '📄 Transcription Approval',
