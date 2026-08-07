@@ -1,6 +1,6 @@
 // Enhancement Poller — TechFusion Report
 // Queries Content Catalog v2 every 30 min for records where:
-//   Status = "✅ Transcription Approved"
+//   Status = "📄 Transcription Approved"
 // Marks as "In progress" immediately to prevent double-processing,
 // then fires the EnhancementAgent. On completion sets "Draft Generated".
 
