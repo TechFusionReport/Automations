@@ -2,7 +2,7 @@
 // Queries Content Catalog v2 every 30 min for records where:
 //   Status = "🚀 Publish Approved"
 // Reads the blog draft and fires the PublishingAgent.
-// On success sets Status = "✨ Published to Github".
+// On success, writes the final canonical URL using the actual dated publish path.
 
 import { PublishingAgent } from './publishing.js';
 
@@ -14,6 +14,20 @@ export class PublisherPoller {
   async getSecrets() {
     const raw = await this.env.CONTENT_KV.get('secrets');
     return raw ? JSON.parse(raw) : {};
+  }
+
+  sanitizeSlug(rawSlug, fallbackTitle = '') {
+    const raw = rawSlug || fallbackTitle || '';
+    return raw.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 60);
+  }
+
+  buildCanonicalUrl(rawSlug, title) {
+    const date = new Date().toISOString().split('T')[0];
+    const slug = this.sanitizeSlug(rawSlug, title);
+    return slug ? `https://techfusionreport.com/_posts/${date}-${slug}.html` : null;
   }
 
   // ─── Run a single page by ID ─────────────────────────────────────────────
@@ -106,6 +120,7 @@ export class PublisherPoller {
     const pageId = page.id;
     const props  = page.properties || {};
     const title  = props?.Title?.title?.[0]?.text?.content || 'Untitled';
+    const seoSlug = props['📰 SEO Slug']?.rich_text?.[0]?.text?.content || null;
 
     console.log(`Publisher Poller: publishing "${title}" (${pageId})`);
 
@@ -123,9 +138,12 @@ export class PublisherPoller {
       featured:  props['⭐ Featured']?.checkbox             || false,
       videoUrl:  props['🎬 Video URL']?.url           || null,
       thumbnail: props['🖼️ Thumbnail']?.url          || null,
-      seoSlug:   props['📰 SEO Slug']?.rich_text?.[0]?.text?.content || null,
+      seoSlug,
       seoMeta:   props['📰 SEO Meta']?.rich_text?.[0]?.text?.content || null
     });
+
+    const canonicalUrl = this.buildCanonicalUrl(seoSlug, title);
+    if (canonicalUrl) await this.writeCanonicalUrl(pageId, canonicalUrl, token);
 
     console.log(`Publisher Poller: ✅ published "${title}"`);
     return result;
@@ -157,7 +175,6 @@ export class PublisherPoller {
                 .filter(b => b.type === 'paragraph')
                 .map(b => b.paragraph?.rich_text?.map(r => r.text?.content || '').join('') || '')
                 .join('\n\n').trim();
-              // Skip placeholder text — only return if it looks like real content (>200 chars)
               if (content && content.length > 200 && !content.includes('populates here after enhancement')) return content;
             }
           }
@@ -165,7 +182,6 @@ export class PublisherPoller {
       }
     }
 
-    // Fallback: 📝 Blog Draft property
     const pageRes = await fetch(
       `https://api.notion.com/v1/pages/${pageId}`,
       { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
@@ -178,6 +194,26 @@ export class PublisherPoller {
     }
 
     return null;
+  }
+
+  async writeCanonicalUrl(pageId, canonicalUrl, token) {
+    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        properties: {
+          '🔗 Canonical URL': { url: canonicalUrl }
+        }
+      })
+    });
+
+    if (!res.ok) {
+      console.warn(`Publisher Poller: canonical URL write failed for ${pageId}: ${await res.text()}`);
+    }
   }
 
   // ─── Write error back to Notion ──────────────────────────────────────────
