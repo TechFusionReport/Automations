@@ -1,8 +1,15 @@
 // Discovery Agent - TechFusion Report
-// v6.2.1 - XtreamDroid RSS discovery fix
-//           Valid RSS feed URLs now win over malformed Channel ID values
-//           Catalog category values normalized to approved top-level schema
-//           KV dedup markers are written only after successful Notion writes
+// v6.5.0 - Category/Subcategory now read from the Content Creator DB's own
+//          Category/Subcategory select properties when set (mapCreatorPageToChannel),
+//          instead of always deriving Category from Content Type and Subcategory
+//          from the broad section name. Falls back to the old heuristic for any
+//          creator that hasn't been backfilled yet.
+// v6.4.0 - Sequential HackerNews fetch to stop subrequest budget exhaustion
+//          fetchHackerNewsTop() previously fired Promise.all on up to 50
+//          parallel item fetches BEFORE the channel batch loop ran, eating
+//          the entire Workers subrequest budget and failing every channel
+//          in the batch with "Too many subrequests by single Worker invocation."
+//          Now fetches sequentially and stops early once enough stories qualify.
 
 const CONTENT_TYPE_MAP = {
   '|| Tech ||':          { section: 'Technology',    category: 'Technology' },
@@ -77,21 +84,24 @@ function parseRSS(xml) {
 
 // HackerNews API
 // Completely free - no API key required.
-async function fetchHackerNewsTop(minScore = 150, limit = 15) {
+
+async function fetchHackerNewsTop(minScore = 150, limit = 15, maxChecked = 20) {
   const topRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
-  const ids = (await topRes.json()).slice(0, 50);
+  const ids = (await topRes.json()).slice(0, maxChecked);
 
-  const stories = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const res = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
-        const story = await res.json();
-        return story?.score >= minScore && story?.url ? story : null;
-      } catch { return null; }
-    })
-  );
+  const stories = [];
+  for (const id of ids) {
+    if (stories.length >= limit) break;
+    try {
+      const res = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+      const story = await res.json();
+      if (story?.score >= minScore && story?.url) stories.push(story);
+    } catch {
+      // skip and keep going - one bad item shouldn't kill the whole pass
+    }
+  }
 
-  return stories.filter(Boolean).sort((a, b) => b.score - a.score).slice(0, limit);
+  return stories.sort((a, b) => b.score - a.score);
 }
 
 class DiscoveryAgent {
@@ -163,10 +173,17 @@ class DiscoveryAgent {
     const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
     const mapped = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
     const section = mapped.section;
-    const category = normalizeCatalogCategory(mapped.category);
+    // Prefer the Creator DB's own Category/Subcategory selects (added Aug 2026
+    // so Catalog v2 records can auto-populate from the creator instead of the
+    // Content Type heuristic below). Falls back to the heuristic until a
+    // creator has been backfilled with its own Category/Subcategory.
+    const creatorCategory    = props['Category']?.select?.name;
+    const creatorSubcategory = props['Subcategory']?.select?.name;
+    const category    = normalizeCatalogCategory(creatorCategory || mapped.category);
+    const subcategory = creatorSubcategory || section;
     const tags     = props['Tags']?.multi_select?.map(t => t.name) || [];
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
-    const base     = { notionPageId: page.id, name, section, category, tags, featured: false, minScore };
+    const base     = { notionPageId: page.id, name, section, category, subcategory, tags, featured: false, minScore };
 
     // ── DIAGNOSTIC LOGGING ──────────────────────────────────────────────────
     // JSON.stringify exposes hidden whitespace/encoding differences in content type strings.
@@ -253,16 +270,26 @@ class DiscoveryAgent {
   }
 
   // Main Run
+  // Processes channels in batches of BATCH_SIZE per invocation to stay under
+  // Cloudflare Workers' 50-subrequest limit. KV offset rotates automatically
+  // so all channels are covered across multiple 6-hour cron runs.
   async run() {
     const config = JSON.parse(await this.env.CONTENT_KV.get('secrets') || '{}');
     const channels = await this.loadChannelsFromCreatorDB(config);
     await this.loadCreatorCache(config);
 
-    const ytCount  = channels.filter(c => c.type === 'youtube').length;
-    const rssCount = channels.filter(c => c.type === 'rss').length;
-    console.log(`[run] channel type breakdown: youtube=${ytCount}, rss=${rssCount}, total=${channels.length}`);
+    const BATCH_SIZE = 8;
+    const offsetRaw = await this.env.CONTENT_KV.get('discovery_offset');
+    const offset = parseInt(offsetRaw || '0');
+    const batch = channels.slice(offset, offset + BATCH_SIZE);
+    const nextOffset = (offset + BATCH_SIZE) >= channels.length ? 0 : offset + BATCH_SIZE;
+    await this.env.CONTENT_KV.put('discovery_offset', String(nextOffset));
 
-    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [] };
+    const ytCount  = batch.filter(c => c.type === 'youtube').length;
+    const rssCount = batch.filter(c => c.type === 'rss').length;
+    console.log(`[run] batch offset=${offset} size=${batch.length} youtube=${ytCount} rss=${rssCount} total=${channels.length}`);
+
+    const results = { youtube: 0, rss: 0, hackernews: 0, approved: 0, errors: [], offset, nextOffset };
 
     // HackerNews - runs unconditionally, free trending signal layer
     try {
@@ -271,7 +298,7 @@ class DiscoveryAgent {
       results.approved   += hn.approved;
     } catch (e) { results.errors.push({ channel: 'HackerNews', error: e.message }); }
 
-    for (const channel of channels) {
+    for (const channel of batch) {
       try {
         console.log(`Processing: ${channel.name} [${channel.type}]`);
         if (channel.type === 'youtube') {
@@ -292,6 +319,9 @@ class DiscoveryAgent {
     await this.env.CONTENT_KV.put('last_discovery', JSON.stringify({
       timestamp: new Date().toISOString(),
       channelCount: channels.length,
+      batchSize: batch.length,
+      offset,
+      nextOffset,
       results
     }));
 
@@ -319,7 +349,8 @@ class DiscoveryAgent {
       return { processed: 0, approved: 0 };
     }
 
-    const items = parseRSS(xml);
+    const MAX_ITEMS_PER_CHANNEL = 10;
+    const items = parseRSS(xml).slice(0, MAX_ITEMS_PER_CHANNEL);
     console.log(`YouTube RSS: ${items.length} videos from ${channel.name}`);
 
     let processed = 0, approved = 0;
@@ -380,9 +411,10 @@ class DiscoveryAgent {
       return { processed: 0, approved: 0 };
     }
 
-    const items = parseRSS(xml);
-    console.log(`RSS: ${items.length} items from ${channel.name}`);
+    const MAX_ITEMS_PER_CHANNEL = 10;
+    const items = parseRSS(xml).slice(0, MAX_ITEMS_PER_CHANNEL);
     let processed = 0, approved = 0;
+    console.log(`RSS: ${items.length} items from ${channel.name}`);
 
     for (const item of items) {
       const keyRaw = (item.guid || item.link).slice(-40);
@@ -525,7 +557,7 @@ class DiscoveryAgent {
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'column_list', column_list: { children: [
         { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'embed', embed: { url: video.url } }] } },
-        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Section: ', true), t(`${channel.section}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
+        { object: 'block', type: 'column', column: { children: [{ object: 'block', type: 'callout', callout: { rich_text: [t('📊 RECORD INFO\n', true), t('Channel: ', true), t(`${channel.name}\n`), t('Subcategory: ', true), t(`${channel.subcategory}\n`), t('Category: ', true), t(`${channel.category}\n`), t('Source: ', true), t(`${video.sourceType || 'YouTube'}\n`), t('Added: ', true), t(`${dateAdded}\n`), t('Tags: ', true), t((channel.tags || []).join(' '))], icon: { emoji: '📊' }, color: 'blue_background' } }] } }
       ] } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'callout', callout: { rich_text: [t('🤖 GEMINI - AI BRIEF\n', true), t('Populates when Enhancement agent runs.', false, 'gray')], icon: { emoji: '🤖' }, color: 'purple_background' } },
@@ -539,7 +571,7 @@ class DiscoveryAgent {
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Thumbnail confirmed')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Embed working')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('SEO slug set')], checked: false } },
-        { object: 'block', type: 'to_do', to_do: { rich_text: [t('Category & Section tagged')], checked: false } },
+        { object: 'block', type: 'to_do', to_do: { rich_text: [t('Category & Subcategory tagged')], checked: false } },
         { object: 'block', type: 'to_do', to_do: { rich_text: [t('Blog draft reviewed')], checked: false } }
       ] } }
     ];
@@ -563,15 +595,15 @@ class DiscoveryAgent {
       '📺 Channel ID':   { rich_text: [{ text: { content: channel.sourceChannelId || channel.id || '' } }] },
       '🖼️ Thumbnail':   { url: video.thumbnail },
       'Status':          { status: { name: '🟡 Pending Review' } },
-      '🗂️ Category':    { select: { name: normalizeCatalogCategory(channel.category) } },
-      '🗂️ Section':     { select: { name: channel.section } },
+      '🗂️ Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
+      '🗂️ Subcategory':    { select: { name: channel.subcategory || channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
-      'Featured':        { checkbox: false },
-      'Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
+      '⭐️ Featured':        { checkbox: false },
+      '📡 Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
       '📅 Date Added':   { date: { start: dateAdded } }
     };
 
-    if (creator) properties['Content Creator'] = { relation: [{ id: creator.id }] };
+    if (creator) properties['👤 Content Creator'] = { relation: [{ id: creator.id }] };
 
     const res = await fetch('https://api.notion.com/v1/pages', {
       method: 'POST',

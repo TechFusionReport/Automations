@@ -5,27 +5,36 @@ export class PublishingAgent {
     this.env = env;
     this.affiliateInserter = new AffiliateInserter();
   }
-
-  createSlug(title) {
+  
+ createSlug(title) {
     return title.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
       .substring(0, 60);
+ }
+  
+  sanitizeSlug(rawSlug) {
+    if (!rawSlug) return null;
+    const cleaned = rawSlug.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 60);
+    return cleaned || null; // guard against a slug that sanitizes to empty
   }
-
+  
   async getSecrets() {
     const raw = await this.env.CONTENT_KV.get('secrets');
     return raw ? JSON.parse(raw) : {};
   }
 
-  async publish({ notionPageId, title, content, category, section, tags, featured = false }) {
+  async publish({ notionPageId, title, content, category, section, tags, featured = false, seoSlug = null, seoMeta = null }) {
     const secrets = await this.getSecrets();
     const date    = new Date().toISOString().split('T')[0];
-    const slug    = this.createSlug(title);
+   const slug    = this.sanitizeSlug(seoSlug) || this.createSlug(title);
 
     const metadata = {
       title,
-      description: this.generateMetaDescription(content),
+      description: seoMeta || this.generateMetaDescription(content),
       date,
       slug,
       category: category || 'General',

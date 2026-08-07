@@ -118,11 +118,13 @@ export class PublisherPoller {
       title,
       content,
       category:  props['🗂️ Category']?.select?.name  || 'General',
-      section:   props['🗂️ Section']?.select?.name   || 'Technology',
+      section:   props['🗂️ Subcategory']?.select?.name   || 'Technology',
       tags:      props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
-      featured:  props.Featured?.checkbox             || false,
+      featured:  props['⭐ Featured']?.checkbox             || false,
       videoUrl:  props['🎬 Video URL']?.url           || null,
-      thumbnail: props['🖼️ Thumbnail']?.url          || null
+      thumbnail: props['🖼️ Thumbnail']?.url          || null,
+      seoSlug:   props['📰 SEO Slug']?.rich_text?.[0]?.text?.content || null,
+      seoMeta:   props['📰 SEO Meta']?.rich_text?.[0]?.text?.content || null
     });
 
     console.log(`Publisher Poller: ✅ published "${title}"`);

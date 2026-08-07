@@ -119,12 +119,12 @@ export class EnhancementPoller {
     const agent = new EnhancementAgent(this.env);
     const result = await agent.start({
       notionPageId:      pageId,
-      videoUrl:          props[CATALOG_PROPERTIES.videoUrl]?.url,
-      category:          props[CATALOG_PROPERTIES.category]?.select?.name,
-      section:           props[CATALOG_PROPERTIES.subcategory]?.select?.name,
-      tags:              props[CATALOG_PROPERTIES.tags]?.multi_select?.map(t => t.name) || [],
-      title:             props[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || '',
-      videoId:           props[CATALOG_PROPERTIES.videoId]?.rich_text?.[0]?.text?.content || '',
+      videoUrl:          props['🎬 Video URL']?.url,
+      category:          props['🗂️ Category']?.select?.name,
+      section:           props['🗂️ Subcategory']?.select?.name,
+      tags:              props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
+      title:             props['Title']?.title?.[0]?.text?.content || '',
+      videoId:           props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
     });
 
     // Mark as Draft Generated on success.
