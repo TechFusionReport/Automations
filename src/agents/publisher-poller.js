@@ -1,10 +1,11 @@
 // Publisher Poller — TechFusion Report
-// Queries Content Catalog v2 every 30 min for records where:
-//   Status = "🚀 Publish Approved"
-// Reads the blog draft and fires the PublishingAgent.
-// On success sets Status = "✨ Published to Github".
+// Publishes only records explicitly approved for publishing AND still passing
+// the SEO gate. Manual status changes cannot bypass missing/low-quality SEO.
 
 import { PublishingAgent } from './publishing.js';
+import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
+
+const SEO_PASS_SCORE = 85;
 
 export class PublisherPoller {
   constructor(env) {
@@ -16,11 +17,35 @@ export class PublisherPoller {
     return raw ? JSON.parse(raw) : {};
   }
 
-  // ─── Run a single page by ID ─────────────────────────────────────────────
+  readRichText(property) {
+    return property?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
+  }
+
+  seoGate(props) {
+    const score = Number(props[CATALOG_PROPERTIES.seoScore]?.number || 0);
+    const seoTitle = this.readRichText(props[CATALOG_PROPERTIES.seoTitle]);
+    const seoSlug = this.readRichText(props[CATALOG_PROPERTIES.seoSlug]);
+    const seoMeta = this.readRichText(props[CATALOG_PROPERTIES.seoMeta]);
+    const focusKeyword = this.readRichText(props[CATALOG_PROPERTIES.focusKeyword]);
+    const schemaType = props[CATALOG_PROPERTIES.schemaType]?.select?.name || '';
+
+    const missing = [];
+    if (!seoTitle) missing.push('SEO title');
+    if (!seoSlug) missing.push('SEO slug');
+    if (!seoMeta) missing.push('meta description');
+    if (!focusKeyword) missing.push('focus keyword');
+    if (!schemaType) missing.push('schema type');
+
+    return {
+      passed: score >= SEO_PASS_SCORE && missing.length === 0,
+      score,
+      missing
+    };
+  }
 
   async runSingle(pageId) {
     const secrets = await this.getSecrets();
-    const token   = secrets.notion_token || this.env.NOTION_TOKEN;
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
 
     const pageRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
@@ -32,59 +57,54 @@ export class PublisherPoller {
     return await this.publishPage(page, token, secrets);
   }
 
-  // ─── Sweep all records approved for publishing ───────────────────────────
-
   async run() {
-    const secrets    = await this.getSecrets();
-    const token      = secrets.notion_token || this.env.NOTION_TOKEN;
+    const secrets = await this.getSecrets();
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
     const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
 
     console.log('Publisher Poller: checking for records approved to publish...');
 
-    const response = await fetch(
-      `https://api.notion.com/v1/databases/${databaseId}/query`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Notion-Version': '2022-06-28'
-        },
-        body: JSON.stringify({
-          page_size: 10,
-          filter: {
-            property: 'Status',
-            status: { equals: '🚀 Publish Approved' }
-          }
-        })
-      }
-    );
+    const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        page_size: 10,
+        filter: {
+          property: CATALOG_PROPERTIES.status,
+          status: { equals: CATALOG_STATUS.publishApproved }
+        }
+      })
+    });
 
     if (!response.ok) {
       console.error('Publisher Poller: Notion query failed:', await response.text());
-      return { processed: 0, errors: [] };
+      return { processed: 0, blocked: 0, errors: [] };
     }
 
-    const data    = await response.json();
+    const data = await response.json();
     const records = data.results || [];
-
     console.log(`Publisher Poller: found ${records.length} records to publish`);
 
     if (records.length === 0) {
       await this.env.CONTENT_KV.put('last_publish_poll', JSON.stringify({
-        timestamp: new Date().toISOString(), found: 0, processed: 0, errors: []
+        timestamp: new Date().toISOString(), found: 0, processed: 0, blocked: 0, errors: []
       }));
-      return { processed: 0, errors: [] };
+      return { processed: 0, blocked: 0, errors: [] };
     }
 
-    const results = { processed: 0, errors: [] };
+    const results = { processed: 0, blocked: 0, errors: [] };
 
     for (const record of records) {
       try {
-        await this.publishPage(record, token, secrets);
-        results.processed++;
+        const result = await this.publishPage(record, token, secrets);
+        if (result?.blocked) results.blocked++;
+        else results.processed++;
       } catch (error) {
-        const title = record.properties?.Title?.title?.[0]?.text?.content || record.id;
+        const title = record.properties?.[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || record.id;
         console.error(`Publisher Poller: error publishing "${title}":`, error);
         results.errors.push({ pageId: record.id, title, error: error.message });
         await this.writeError(record.id, error.message, token);
@@ -100,14 +120,21 @@ export class PublisherPoller {
     return results;
   }
 
-  // ─── Core publish logic ──────────────────────────────────────────────────
-
   async publishPage(page, token, secrets) {
     const pageId = page.id;
-    const props  = page.properties || {};
-    const title  = props?.Title?.title?.[0]?.text?.content || 'Untitled';
+    const props = page.properties || {};
+    const title = props[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || 'Untitled';
+    const gate = this.seoGate(props);
 
-    console.log(`Publisher Poller: publishing "${title}" (${pageId})`);
+    if (!gate.passed) {
+      const reason = `Publishing blocked by SEO gate: score ${gate.score}/${SEO_PASS_SCORE}` +
+        (gate.missing.length ? `; missing ${gate.missing.join(', ')}` : '');
+      console.warn(`Publisher Poller: ${reason} for "${title}"`);
+      await this.writeSeoReview(pageId, reason, token);
+      return { blocked: true, reason, score: gate.score, missing: gate.missing };
+    }
+
+    console.log(`Publisher Poller: publishing "${title}" (${pageId}), SEO score ${gate.score}`);
 
     const content = await this.readBlogDraft(pageId, token);
     if (!content) throw new Error('No blog draft found — run Enhancement agent first');
@@ -117,29 +144,28 @@ export class PublisherPoller {
       notionPageId: pageId,
       title,
       content,
-      category:  props['🗂️ Category']?.select?.name  || 'General',
-      section:   props['🗂️ Subcategory']?.select?.name   || 'Technology',
-      tags:      props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
-      featured:  props['⭐ Featured']?.checkbox             || false,
-      videoUrl:  props['🎬 Video URL']?.url           || null,
-      thumbnail: props['🖼️ Thumbnail']?.url          || null,
-      seoSlug:   props['📰 SEO Slug']?.rich_text?.[0]?.text?.content || null,
-      seoMeta:   props['📰 SEO Meta']?.rich_text?.[0]?.text?.content || null
+      category: props[CATALOG_PROPERTIES.category]?.select?.name || 'General',
+      section: props[CATALOG_PROPERTIES.subcategory]?.select?.name || 'Technology',
+      tags: props[CATALOG_PROPERTIES.tags]?.multi_select?.map(t => t.name) || [],
+      featured: props[CATALOG_PROPERTIES.featured]?.checkbox || false,
+      seoTitle: this.readRichText(props[CATALOG_PROPERTIES.seoTitle]) || title,
+      seoSlug: this.readRichText(props[CATALOG_PROPERTIES.seoSlug]) || null,
+      seoMeta: this.readRichText(props[CATALOG_PROPERTIES.seoMeta]) || null,
+      schemaType: props[CATALOG_PROPERTIES.schemaType]?.select?.name || 'Article',
+      jsonLd: this.readRichText(props[CATALOG_PROPERTIES.jsonLd]) || null,
+      internalLinks: this.readRichText(props[CATALOG_PROPERTIES.internalLinks]) || null,
+      focusKeyword: this.readRichText(props[CATALOG_PROPERTIES.focusKeyword]) || null,
+      imageAltText: this.readRichText(props[CATALOG_PROPERTIES.imageAltText]) || null
     });
 
     console.log(`Publisher Poller: ✅ published "${title}"`);
     return result;
   }
 
-  // ─── Read Blog Draft ─────────────────────────────────────────────────────
-  // Tries the ⚡ TFR BLOG DRAFT toggle block first,
-  // falls back to 📝 Blog Draft property.
-
   async readBlogDraft(pageId, token) {
-    const blocksRes = await fetch(
-      `https://api.notion.com/v1/blocks/${pageId}/children?page_size=50`,
-      { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
-    );
+    const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=50`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
+    });
 
     if (blocksRes.ok) {
       const blocks = await blocksRes.json();
@@ -147,40 +173,51 @@ export class PublisherPoller {
         if (block.type === 'toggle') {
           const label = block.toggle?.rich_text?.[0]?.text?.content || '';
           if (label.includes('TFR BLOG DRAFT') || label.includes('BLOG DRAFT')) {
-            const childRes = await fetch(
-              `https://api.notion.com/v1/blocks/${block.id}/children`,
-              { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
-            );
+            const childRes = await fetch(`https://api.notion.com/v1/blocks/${block.id}/children`, {
+              headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
+            });
             if (childRes.ok) {
               const children = await childRes.json();
-              const content = (children.results || [])
+              const blockContent = (children.results || [])
                 .filter(b => b.type === 'paragraph')
                 .map(b => b.paragraph?.rich_text?.map(r => r.text?.content || '').join('') || '')
                 .join('\n\n').trim();
-              // Skip placeholder text — only return if it looks like real content (>200 chars)
-              if (content && content.length > 200 && !content.includes('populates here after enhancement')) return content;
+              if (blockContent && blockContent.length > 200 && !blockContent.includes('populates here after enhancement')) return blockContent;
             }
           }
         }
       }
     }
 
-    // Fallback: 📝 Blog Draft property
-    const pageRes = await fetch(
-      `https://api.notion.com/v1/pages/${pageId}`,
-      { headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' } }
-    );
+    const pageRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
+    });
     if (pageRes.ok) {
       const page = await pageRes.json();
-      const draft = page.properties?.['📝 Blog Draft']?.rich_text
-        ?.map(r => r.text?.content || '').join('').trim();
+      const draft = this.readRichText(page.properties?.[CATALOG_PROPERTIES.blogDraft]);
       if (draft) return draft;
     }
 
     return null;
   }
 
-  // ─── Write error back to Notion ──────────────────────────────────────────
+  async writeSeoReview(pageId, reason, token) {
+    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        properties: {
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.draftReview } },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: reason.substring(0, 2000) } }] }
+        }
+      })
+    });
+    if (!res.ok) console.warn(`Publisher Poller: could not move ${pageId} to SEO review: ${await res.text()}`);
+  }
 
   async writeError(pageId, errorMessage, token) {
     await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
@@ -192,8 +229,8 @@ export class PublisherPoller {
       },
       body: JSON.stringify({
         properties: {
-          'Status':        { status: { name: '❌ Errors' } },
-          '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.errors } },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
         }
       })
     });
