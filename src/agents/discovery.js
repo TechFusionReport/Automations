@@ -1,4 +1,7 @@
 // Discovery Agent - TechFusion Report
+// v6.6.0 - Content Creator DB is the source of truth for Category/Subcategory.
+//          New Catalog records inherit those values before they are created.
+//          Also fixes exact Catalog property keys for Featured and Source.
 // v6.5.0 - Category/Subcategory now read from the Content Creator DB's own
 //          Category/Subcategory select properties when set (mapCreatorPageToChannel),
 //          instead of always deriving Category from Content Type and Subcategory
@@ -173,10 +176,8 @@ class DiscoveryAgent {
     const contentTypes = props['Content Type']?.multi_select?.map(t => t.name) || [];
     const mapped = CONTENT_TYPE_MAP[contentTypes[0]] || DEFAULT_SECTION_CATEGORY;
     const section = mapped.section;
-    // Prefer the Creator DB's own Category/Subcategory selects (added Aug 2026
-    // so Catalog v2 records can auto-populate from the creator instead of the
-    // Content Type heuristic below). Falls back to the heuristic until a
-    // creator has been backfilled with its own Category/Subcategory.
+
+    // Creator DB is the source of truth. Only fall back for old/unfilled rows.
     const creatorCategory    = props['Category']?.select?.name;
     const creatorSubcategory = props['Subcategory']?.select?.name;
     const category    = normalizeCatalogCategory(creatorCategory || mapped.category);
@@ -184,6 +185,13 @@ class DiscoveryAgent {
     const tags     = props['Tags']?.multi_select?.map(t => t.name) || [];
     const minScore = props['Auto-Approve']?.checkbox ? 0 : 70;
     const base     = { notionPageId: page.id, name, section, category, subcategory, tags, featured: false, minScore };
+
+    console.log(
+      `[creator-metadata] ${JSON.stringify(name)}` +
+      ` | category=${JSON.stringify(category)}` +
+      ` | subcategory=${JSON.stringify(subcategory)}` +
+      ` | source=${creatorCategory && creatorSubcategory ? 'creator-db' : 'fallback'}`
+    );
 
     // ── DIAGNOSTIC LOGGING ──────────────────────────────────────────────────
     // JSON.stringify exposes hidden whitespace/encoding differences in content type strings.
@@ -473,6 +481,7 @@ class DiscoveryAgent {
           name: 'Hacker News',
           section: 'Technology',
           category,
+          subcategory: 'Technology',
           tags: ['Trending', 'HackerNews'],
           featured: false,
           minScore: 65
@@ -587,6 +596,7 @@ class DiscoveryAgent {
     const dateAdded = new Date().toISOString().split('T')[0];
 
     console.log(`Writing to Notion: ${video.title}`);
+    console.log(`Using creator metadata: category=${channel.category}, subcategory=${channel.subcategory || channel.section}`);
 
     const properties = {
       'Title':           { title: [{ text: { content: video.title } }] },
@@ -595,11 +605,11 @@ class DiscoveryAgent {
       '📺 Channel ID':   { rich_text: [{ text: { content: channel.sourceChannelId || channel.id || '' } }] },
       '🖼️ Thumbnail':   { url: video.thumbnail },
       'Status':          { status: { name: '🟡 Pending Review' } },
-      '🗂️ Category':       { select: { name: normalizeCatalogCategory(channel.category) } },
-      '🗂️ Subcategory':    { select: { name: channel.subcategory || channel.section } },
+      '🗂️ Category':    { select: { name: normalizeCatalogCategory(channel.category) } },
+      '🗂️ Subcategory': { select: { name: channel.subcategory || channel.section } },
       '🔖 Tags':         { multi_select: (channel.tags || []).map(tag => ({ name: tag })) },
-      '⭐️ Featured':        { checkbox: false },
-      '📡 Source':          { multi_select: [{ name: video.sourceType || 'YouTube' }] },
+      '⭐ Featured':     { checkbox: false },
+      '\u00a0📡 Source': { multi_select: [{ name: video.sourceType || 'YouTube' }] },
       '📅 Date Added':   { date: { start: dateAdded } }
     };
 
