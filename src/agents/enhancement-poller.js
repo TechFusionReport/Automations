@@ -1,10 +1,11 @@
 // Enhancement Poller — TechFusion Report
 // Queries Content Catalog v2 every 30 min for records where:
-//   Status = "🟡 Pending Review"
-// Marks as "In Progress" immediately to prevent double-processing,
+//   Status = "📄 Transcription Approved"
+// Marks as "In progress" immediately to prevent double-processing,
 // then fires the EnhancementAgent. On completion sets "Draft Generated".
 
 import { EnhancementOrchestrator as EnhancementAgent } from './enhancement.js';
+import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
 
 export class EnhancementPoller {
   constructor(env) {
@@ -32,14 +33,14 @@ export class EnhancementPoller {
     return await this.enhancePage(page, token);
   }
 
-  // ─── Sweep all records pending enhancement ───────────────────────────────
+  // ─── Sweep all records approved for enhancement ──────────────────────────
 
   async run() {
     const secrets    = await this.getSecrets();
     const token      = secrets.notion_token || this.env.NOTION_TOKEN;
     const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
 
-    console.log('Enhancement Poller: checking for records ready to enhance...');
+    console.log('Enhancement Poller: checking for transcription-approved records...');
 
     const response = await fetch(
       `https://api.notion.com/v1/databases/${databaseId}/query`,
@@ -53,8 +54,8 @@ export class EnhancementPoller {
         body: JSON.stringify({
           page_size: 5, // small batches — enhancement is Gemini-heavy
           filter: {
-            property: 'Status',
-            status: { equals: '🟡 Pending Review' }
+            property: CATALOG_PROPERTIES.status,
+            status: { equals: CATALOG_STATUS.transcriptionApproved }
           }
         })
       }
@@ -81,13 +82,13 @@ export class EnhancementPoller {
 
     for (const record of records) {
       const pageId = record.id;
-      const title  = record.properties?.Title?.title?.[0]?.text?.content || pageId;
+      const title  = record.properties?.[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || pageId;
 
       try {
         console.log(`Enhancement Poller: enhancing "${title}"`);
 
-        // Mark In Progress immediately to prevent double-processing on next poll
-        await this.setStatus(pageId, 'In progress', token);
+        // Mark In progress immediately to prevent double-processing on next poll.
+        await this.setStatus(pageId, CATALOG_STATUS.inProgress, token);
 
         await this.enhancePage(record, token);
         results.processed++;
@@ -126,8 +127,8 @@ export class EnhancementPoller {
       videoId:           props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
     });
 
-    // Mark as Draft Generated on success
-    await this.setStatus(pageId, 'Draft Generated', token);
+    // Mark as Draft Generated on success.
+    await this.setStatus(pageId, CATALOG_STATUS.draftGenerated, token);
     return result;
   }
 
@@ -142,21 +143,20 @@ export class EnhancementPoller {
         'Notion-Version': '2022-06-28'
       },
       body: JSON.stringify({
-        properties: { 'Status': { status: { name: statusName } } }
+        properties: { [CATALOG_PROPERTIES.status]: { status: { name: statusName } } }
       })
     });
     if (!res.ok) {
-      // Log but don't throw — a status update failure is serious but shouldn't mask
-      // the underlying error on the record.
-      console.error(`setStatus failed for ${pageId} (tried "${statusName}"): ${await res.text()}`);
+      const body = await res.text();
+      console.error(`setStatus failed for ${pageId} (tried "${statusName}"): ${body}`);
+      throw new Error(`Notion status update failed for ${pageId}: ${body}`);
     }
+    console.log(`Enhancement Poller: status ${pageId} → "${statusName}"`);
   }
 
   async writeError(pageId, errorMessage, token) {
     // Update status first, independently from the error message write.
-    // If ⚠️ Last Error doesn't exist as a Notion property the combined PATCH
-    // would fail and the status would never move to error — so we separate them.
-    await this.setStatus(pageId, '❌ Errors', token);
+    await this.setStatus(pageId, CATALOG_STATUS.errors, token);
 
     try {
       const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
@@ -168,7 +168,7 @@ export class EnhancementPoller {
         },
         body: JSON.stringify({
           properties: {
-            '⚠️ Last Error': { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
+            [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
           }
         })
       });
