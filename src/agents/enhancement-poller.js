@@ -1,8 +1,6 @@
 // Enhancement Poller — TechFusion Report
-// Queries Content Catalog v2 every 30 min for records where:
-//   Status = "📄 Transcription Approved"
-// Marks as "In progress" immediately to prevent double-processing,
-// then fires the EnhancementAgent. On completion sets "Draft Generated".
+// Queries Content Catalog v2 for transcription-approved records, then passes
+// Creator DB SEO defaults into the Enhancement Agent before draft + SEO generation.
 
 import { EnhancementOrchestrator as EnhancementAgent } from './enhancement.js';
 import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
@@ -17,11 +15,9 @@ export class EnhancementPoller {
     return raw ? JSON.parse(raw) : {};
   }
 
-  // ─── Run a single page by ID ─────────────────────────────────────────────
-
   async runSingle(pageId) {
     const secrets = await this.getSecrets();
-    const token   = secrets.notion_token || this.env.NOTION_TOKEN;
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
 
     const pageRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
@@ -33,42 +29,36 @@ export class EnhancementPoller {
     return await this.enhancePage(page, token);
   }
 
-  // ─── Sweep all records approved for enhancement ──────────────────────────
-
   async run() {
-    const secrets    = await this.getSecrets();
-    const token      = secrets.notion_token || this.env.NOTION_TOKEN;
+    const secrets = await this.getSecrets();
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
     const databaseId = secrets.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
 
     console.log('Enhancement Poller: checking for transcription-approved records...');
 
-    const response = await fetch(
-      `https://api.notion.com/v1/databases/${databaseId}/query`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Notion-Version': '2022-06-28'
-        },
-        body: JSON.stringify({
-          page_size: 5, // small batches — enhancement is Gemini-heavy
-          filter: {
-            property: CATALOG_PROPERTIES.status,
-            status: { equals: CATALOG_STATUS.transcriptionApproved }
-          }
-        })
-      }
-    );
+    const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        page_size: 5,
+        filter: {
+          property: CATALOG_PROPERTIES.status,
+          status: { equals: CATALOG_STATUS.transcriptionApproved }
+        }
+      })
+    });
 
     if (!response.ok) {
       console.error('Enhancement Poller: Notion query failed:', await response.text());
       return { processed: 0, errors: [] };
     }
 
-    const data    = await response.json();
+    const data = await response.json();
     const records = data.results || [];
-
     console.log(`Enhancement Poller: found ${records.length} records to enhance`);
 
     if (records.length === 0) {
@@ -82,18 +72,14 @@ export class EnhancementPoller {
 
     for (const record of records) {
       const pageId = record.id;
-      const title  = record.properties?.[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || pageId;
+      const title = record.properties?.[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || pageId;
 
       try {
         console.log(`Enhancement Poller: enhancing "${title}"`);
-
-        // Mark In progress immediately to prevent double-processing on next poll.
         await this.setStatus(pageId, CATALOG_STATUS.inProgress, token);
-
         await this.enhancePage(record, token);
         results.processed++;
         console.log(`Enhancement Poller: ✅ enhanced "${title}"`);
-
       } catch (error) {
         console.error(`Enhancement Poller: error on "${title}":`, error);
         results.errors.push({ pageId, title, error: error.message });
@@ -110,29 +96,62 @@ export class EnhancementPoller {
     return results;
   }
 
-  // ─── Core enhance logic ──────────────────────────────────────────────────
+  async readCreatorSeoDefaults(props, token) {
+    const creatorId = props['👤 Content Creator']?.relation?.[0]?.id;
+    if (!creatorId) return {};
+
+    try {
+      const res = await fetch(`https://api.notion.com/v1/pages/${creatorId}`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' }
+      });
+      if (!res.ok) {
+        console.warn(`Enhancement Poller: creator SEO defaults fetch failed (${res.status})`);
+        return {};
+      }
+
+      const creator = await res.json();
+      const p = creator.properties || {};
+      const text = key => p[key]?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
+      const multi = key => p[key]?.multi_select?.map(v => v.name).filter(Boolean) || [];
+      const select = key => p[key]?.select?.name || '';
+
+      const defaults = {
+        primaryKeywords: multi('🔑 Primary Keywords'),
+        secondaryKeywords: multi('🔑 Secondary Keywords'),
+        topicCluster: text('🧩 Topic Cluster'),
+        defaultAuthor: text('✍️ Default Author'),
+        brandVoice: select('🎙️ Brand Voice'),
+        eeatLevel: select('🏅 EEAT Level')
+      };
+
+      console.log(`Enhancement Poller: loaded creator SEO defaults for ${creatorId}`);
+      return defaults;
+    } catch (e) {
+      console.warn(`Enhancement Poller: creator SEO defaults error: ${e.message}`);
+      return {};
+    }
+  }
 
   async enhancePage(page, token) {
     const pageId = page.id;
-    const props  = page.properties || {};
+    const props = page.properties || {};
+    const seoDefaults = await this.readCreatorSeoDefaults(props, token);
 
     const agent = new EnhancementAgent(this.env);
     const result = await agent.start({
-      notionPageId:      pageId,
-      videoUrl:          props['🎬 Video URL']?.url,
-      category:          props['🗂️ Category']?.select?.name,
-      section:           props['🗂️ Subcategory']?.select?.name,
-      tags:              props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
-      title:             props['Title']?.title?.[0]?.text?.content || '',
-      videoId:           props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
+      notionPageId: pageId,
+      videoUrl: props['🎬 Video URL']?.url,
+      category: props['🗂️ Category']?.select?.name,
+      section: props['🗂️ Subcategory']?.select?.name,
+      tags: props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
+      title: props['Title']?.title?.[0]?.text?.content || '',
+      videoId: props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
+      seoDefaults
     });
 
-    // Mark as Draft Generated on success.
     await this.setStatus(pageId, CATALOG_STATUS.draftGenerated, token);
     return result;
   }
-
-  // ─── Helpers ─────────────────────────────────────────────────────────────
 
   async setStatus(pageId, statusName, token) {
     const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
@@ -155,7 +174,6 @@ export class EnhancementPoller {
   }
 
   async writeError(pageId, errorMessage, token) {
-    // Update status first, independently from the error message write.
     await this.setStatus(pageId, CATALOG_STATUS.errors, token);
 
     try {
@@ -168,7 +186,9 @@ export class EnhancementPoller {
         },
         body: JSON.stringify({
           properties: {
-            [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }] }
+            [CATALOG_PROPERTIES.lastError]: {
+              rich_text: [{ text: { content: errorMessage.substring(0, 2000) } }]
+            }
           }
         })
       });
