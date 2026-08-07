@@ -16,7 +16,22 @@ export const CATALOG_PROPERTIES = Object.freeze({
   source: '\u00a0📡 Source',
   publishedToGithub: '✅ Published To Github',
   publishedUrl: '🔗 Published URL',
-  publishedDate: '📅 Published Date'
+  publishedDate: '📅 Published Date',
+  seoTitle: '📰 SEO Title',
+  seoSlug: '📰 SEO Slug',
+  seoMeta: '📰 SEO Meta',
+  focusKeyword: '🔑 Focus Keyword',
+  secondaryKeywords: '🔑 Secondary Keywords',
+  searchIntent: '🎯 Search Intent',
+  schemaType: '🧬 Schema Type',
+  seoScore: '📈 SEO Score',
+  canonicalUrl: '🔗 Canonical URL',
+  internalLinks: '🔄 Internal Links',
+  relatedTopic: '🧩 Related Topic',
+  imageAltText: '🖼️ Image Alt Text',
+  seoFaq: '❓ SEO FAQ',
+  jsonLd: '🧾 JSON-LD',
+  blogDraft: '📝 Blog Draft'
 });
 
 export const CATALOG_STATUS = Object.freeze({
@@ -25,6 +40,7 @@ export const CATALOG_STATUS = Object.freeze({
   transcriptionApproved: '📄 Transcription Approved',
   inProgress: 'In progress',
   draftGenerated: 'Draft Generated',
+  draftReview: '📝 Draft Review',
   draftApproval: '✅ Draft Approval',
   publishApproved: '🚀 Publish Approved',
   publishedToGithub: '✅Published To Github',
