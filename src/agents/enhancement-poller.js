@@ -5,6 +5,8 @@
 import { EnhancementOrchestrator as EnhancementAgent } from './enhancement.js';
 import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
 
+const SEO_PASS_SCORE = 85;
+
 export class EnhancementPoller {
   constructor(env) {
     this.env = env;
@@ -77,9 +79,9 @@ export class EnhancementPoller {
       try {
         console.log(`Enhancement Poller: enhancing "${title}"`);
         await this.setStatus(pageId, CATALOG_STATUS.inProgress, token);
-        await this.enhancePage(record, token);
+        const result = await this.enhancePage(record, token);
         results.processed++;
-        console.log(`Enhancement Poller: ✅ enhanced "${title}"`);
+        console.log(`Enhancement Poller: ✅ enhanced "${title}" (SEO ${result.seoScore}, ${result.seoGateStatus})`);
       } catch (error) {
         console.error(`Enhancement Poller: error on "${title}":`, error);
         results.errors.push({ pageId, title, error: error.message });
@@ -132,6 +134,15 @@ export class EnhancementPoller {
     }
   }
 
+  passesSeoGate(result = {}) {
+    const score = Number(result.seoScore || 0);
+    return score >= SEO_PASS_SCORE
+      && Boolean(result.seoTitle)
+      && Boolean(result.seoSlug)
+      && Boolean(result.focusKeyword)
+      && Boolean(result.schemaType);
+  }
+
   async enhancePage(page, token) {
     const pageId = page.id;
     const props = page.properties || {};
@@ -140,17 +151,25 @@ export class EnhancementPoller {
     const agent = new EnhancementAgent(this.env);
     const result = await agent.start({
       notionPageId: pageId,
-      videoUrl: props['🎬 Video URL']?.url,
-      category: props['🗂️ Category']?.select?.name,
-      section: props['🗂️ Subcategory']?.select?.name,
-      tags: props['🔖 Tags']?.multi_select?.map(t => t.name) || [],
-      title: props['Title']?.title?.[0]?.text?.content || '',
-      videoId: props['🆔 Video ID']?.rich_text?.[0]?.text?.content || '',
+      videoUrl: props[CATALOG_PROPERTIES.videoUrl]?.url,
+      category: props[CATALOG_PROPERTIES.category]?.select?.name,
+      section: props[CATALOG_PROPERTIES.subcategory]?.select?.name,
+      tags: props[CATALOG_PROPERTIES.tags]?.multi_select?.map(t => t.name) || [],
+      title: props[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || '',
+      videoId: props[CATALOG_PROPERTIES.videoId]?.rich_text?.[0]?.text?.content || '',
       seoDefaults
     });
 
-    await this.setStatus(pageId, CATALOG_STATUS.draftGenerated, token);
-    return result;
+    const passed = this.passesSeoGate(result);
+    const nextStatus = passed ? CATALOG_STATUS.draftGenerated : CATALOG_STATUS.draftReview;
+    await this.setStatus(pageId, nextStatus, token);
+
+    return {
+      ...result,
+      seoGateStatus: passed ? 'passed' : 'review-required',
+      seoThreshold: SEO_PASS_SCORE,
+      nextStatus
+    };
   }
 
   async setStatus(pageId, statusName, token) {
