@@ -6,6 +6,7 @@ import { EnhancementOrchestrator as EnhancementAgent } from './agents/enhancemen
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
 import { EnhancementPoller }  from './agents/enhancement-poller.js';
+import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
 
@@ -48,6 +49,15 @@ function json(data, status = 200) {
 export default {
 
   async fetch(request, env, ctx) {
+    // ── /ops dashboard API (Cloudflare Access-gated) ───────────────────────
+    // Delegated to a dedicated handler because the Router below is exact-match
+    // only. handleOps returns null for anything that isn't /ops/api/*.
+    const opsUrl = new URL(request.url);
+    if (opsUrl.pathname.startsWith('/ops/api/')) {
+      const opsRes = await handleOps(request, env, ctx);
+      if (opsRes) return opsRes;
+    }
+
     const router = new Router();
 
     // ── Core pipeline endpoints ────────────────────────────────────────────
