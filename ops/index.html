@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>TechFusion Ops Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./ops.css" />
+</head>
+<body>
+  <div class="shell">
+    <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">⚡</span><span>TechFusion<br />Ops Center</span></div>
+
+      <nav>
+        <div class="nav-group">Overview</div>
+        <a href="#" class="nav-item" data-view="dashboard">Ops Dashboard</a>
+
+        <div class="nav-group">Human Review Gates</div>
+        <a href="#" class="nav-item" data-view="queue">Review Queue <span class="badge-count" id="badge-queue">0</span></a>
+        <a href="#" class="nav-item" data-view="drafts">Draft Review <span class="badge-count" id="badge-drafts">0</span></a>
+
+        <div class="nav-group">Data</div>
+        <a href="#" class="nav-item" data-view="board">Content Catalog</a>
+        <a class="nav-item ext" href="https://www.notion.so/0403b4267a54467a8bfd7dfb2cc4a7a8" target="_blank" rel="noopener">Creators ↗</a>
+        <a class="nav-item ext" href="https://www.notion.so/1fbbd080de92804389aadc02853c15c7" target="_blank" rel="noopener">Catalog in Notion ↗</a>
+
+        <div class="nav-group">Monitoring</div>
+        <a href="#" class="nav-item" data-view="errors">Errors <span class="badge-count" id="badge-errors">0</span></a>
+      </nav>
+
+      <div class="sys"><span class="dot ok"></span> internal · Access-gated</div>
+    </aside>
+
+    <!-- ── Main ────────────────────────────────────────────────────────── -->
+    <main class="main">
+      <section id="view-dashboard" class="view"></section>
+      <section id="view-queue" class="view"></section>
+      <section id="view-drafts" class="view"></section>
+      <section id="view-board" class="view"></section>
+      <section id="view-errors" class="view"></section>
+    </main>
+  </div>
+
+  <script type="module" src="./ops.js"></script>
+</body>
+</html>
