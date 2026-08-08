@@ -34,6 +34,14 @@ max_batch_timeout = 30
 
 [vars]
 NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
+# Cloudflare Access for the /ops dashboard API. Fill both in AFTER creating the
+# Access application for techfusionreport.com/ops (see docs spec §4.2):
+#   ACCESS_TEAM_DOMAIN — your team subdomain only, e.g. "techfusion"
+#                        (→ https://techfusion.cloudflareaccess.com)
+#   ACCESS_AUD         — the Access application's AUD tag (Application audience)
+# Both are non-secret. While empty, /ops/api/* returns 500 "Access not configured".
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
 
 [triggers]
 crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *", "*/30 * * * *"]
