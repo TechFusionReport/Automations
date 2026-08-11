@@ -6,6 +6,7 @@ import { EnhancementOrchestrator as EnhancementAgent } from './agents/enhancemen
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
 import { EnhancementPoller }  from './agents/enhancement-poller.js';
+import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
 
@@ -48,6 +49,10 @@ function json(data, status = 200) {
 export default {
 
   async fetch(request, env, ctx) {
+    // Delegate the Cloudflare Access-gated dashboard API before exact-match routing.
+    const opsResponse = await handleOps(request, env, ctx);
+    if (opsResponse) return opsResponse;
+
     const router = new Router();
 
     // ── Core pipeline endpoints ────────────────────────────────────────────
