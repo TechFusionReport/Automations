@@ -49,14 +49,9 @@ function json(data, status = 200) {
 export default {
 
   async fetch(request, env, ctx) {
-    // ── /ops dashboard API (Cloudflare Access-gated) ───────────────────────
-    // Delegated to a dedicated handler because the Router below is exact-match
-    // only. handleOps returns null for anything that isn't /ops/api/*.
-    const opsUrl = new URL(request.url);
-    if (opsUrl.pathname.startsWith('/ops/api/')) {
-      const opsRes = await handleOps(request, env, ctx);
-      if (opsRes) return opsRes;
-    }
+    // Delegate the Cloudflare Access-gated dashboard API before exact-match routing.
+    const opsResponse = await handleOps(request, env, ctx);
+    if (opsResponse) return opsResponse;
 
     const router = new Router();
 
