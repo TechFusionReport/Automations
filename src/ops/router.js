@@ -34,10 +34,20 @@ async function listQueue(client, dbId) {
   return { items, count: items.length };
 }
 
-async function listDrafts(client, dbId) {
-  const data = await client.query(dbId, queryBody({ statuses: [S.draftGenerated, S.draftReview], sorts: SORT_CREATED_ASC, pageSize: 50 }));
+async function listDrafts(client, dbId, cursor) {
+  const data = await client.query(dbId, queryBody({
+    statuses: [S.draftGenerated, S.draftReview],
+    sorts: SORT_CREATED_ASC,
+    pageSize: 50,
+    cursor,
+  }));
   const items = (data.results || []).map(mapDraftItem);
-  return { items, count: items.length };
+  return {
+    items,
+    count: items.length,
+    nextCursor: data.has_more ? data.next_cursor : null,
+    hasMore: Boolean(data.has_more),
+  };
 }
 
 async function listErrors(client, dbId, pageSize = 50) {
@@ -227,7 +237,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
         case '/queue': return json(await listQueue(client, dbId));
-        case '/drafts': return json(await listDrafts(client, dbId));
+        case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor')));
         case '/board': return json(await listBoard(env, dbId, client, ctx, now));
         case '/errors': return json(await listErrors(client, dbId));
         case '/archive': return json(await listArchive(client, dbId, url.searchParams.get('cursor')));
