@@ -136,6 +136,9 @@ if (typeof document !== 'undefined') {
     draftsLoading: false,
     selectedQueue: null,
     selectedDraft: null,
+    selectedDraftIds: new Set(),
+    draftQuery: { q: '', sort: 'oldest', featured: '' },
+    dirtyDraft: false,
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const view = (name) => $(`#view-${name}`);
@@ -318,124 +321,103 @@ if (typeof document !== 'undefined') {
   }
 
   // ── draft review (Gate 2) ──────────────────────────────────────────────────
+  function draftParams(cursor = '') {
+    const p = new URLSearchParams();
+    Object.entries(state.draftQuery).forEach(([k, v]) => { if (v !== '') p.set(k, v); });
+    if (cursor) p.set('cursor', cursor);
+    return p.toString() ? `?${p}` : '';
+  }
+
   async function loadDrafts() {
     const root = view('drafts');
     state.draftDetails = {};
     state.draftDetailLoading = null;
+    state.dirtyDraft = false;
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading drafts…')}</div><div class="detail-pane"></div></div>`;
     try {
-      const data = await api('/drafts');
+      const data = await api('/drafts' + draftParams());
       state.drafts = data.items;
       state.draftsCursor = data.nextCursor || null;
       state.draftsHasMore = data.hasMore === true;
       state.draftsLoading = false;
+      state.selectedDraft = state.drafts.length ? 0 : null;
       renderDrafts();
-    } catch (e) {
-      $('.list-pane', root).innerHTML = errorState(e.message);
-    }
+    } catch (e) { $('.list-pane', root).innerHTML = errorState(e.message); }
+  }
+
+  function riskSummary(text = '') {
+    const estimate = text.match(/(\d{1,3})\s*%/)?.[1];
+    const unsupported = (text.match(/POSSIBLY UNSUPPORTED[\s\S]*?(?=CHANGED DETAILS|COVERAGE ESTIMATE|$)/i)?.[0].match(/^-/gm) || []).length;
+    const changed = (text.match(/CHANGED DETAILS[\s\S]*?(?=COVERAGE ESTIMATE|$)/i)?.[0].match(/^-/gm) || []).length;
+    const level = unsupported + changed > 4 ? 'high' : unsupported + changed ? 'medium' : 'low';
+    return `<div class="risk ${level}"><strong>${level.toUpperCase()} RISK</strong> · Coverage ${estimate ? estimate + '%' : 'not scored'} · ${unsupported} unsupported · ${changed} changed</div>`;
   }
 
   function renderDrafts() {
-    const root = view('drafts');
-    const listPane = $('.list-pane', root);
-    if (!state.drafts.length) { listPane.innerHTML = empty('No drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
-    const rows = state.drafts.map((it, i) => `
+    const root = view('drafts'), listPane = $('.list-pane', root);
+    const tools = `<div class="review-tools">
+      <input id="draft-search" type="search" value="${escapeHtml(state.draftQuery.q)}" placeholder="Search title">
+      <select id="draft-sort"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="seoHigh">SEO high–low</option><option value="seoLow">SEO low–high</option></select>
+      <select id="draft-featured"><option value="">All</option><option value="true">Featured</option><option value="false">Not featured</option></select>
+      <button class="btn ghost" data-filter-drafts>Apply</button>
+    </div>`;
+    if (!state.drafts.length) { listPane.innerHTML = tools + empty('No matching drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
+    const rows = state.drafts.map((it, i) => `<div class="row-wrap">
+      <input type="checkbox" data-select-draft="${escapeHtml(it.id)}" ${state.selectedDraftIds.has(it.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(it.title)}">
       <button class="row ${i === state.selectedDraft ? 'sel' : ''}" data-i="${i}">
         <span class="row-title">${escapeHtml(it.title || 'Untitled')}${it.featured ? ' ⭐' : ''}</span>
         <span class="row-sub muted mono">${it.wordCount}w · SEO ${it.seoScore ?? '—'}</span>
-      </button>`).join('');
+      </button></div>`).join('');
     const total = state.overview?.kpis?.gate2Backlog;
-    const progress = total == null ? `${state.drafts.length} loaded` : `${state.drafts.length} of ${total} loaded`;
-    const more = state.draftsHasMore
-      ? `<div class="actions"><button class="btn ghost" data-load-more="drafts" ${state.draftsLoading ? 'disabled' : ''}>
-          ${state.draftsLoading ? 'Loading…' : 'Load 50 More'}</button><span class="muted mono">${progress}</span></div>`
-      : `<div class="actions"><span class="muted mono">${progress}</span></div>`;
-    listPane.innerHTML = rows + more;
-    if (state.selectedDraft == null) state.selectedDraft = 0;
+    const progress = total == null ? `${state.drafts.length} loaded` : `${state.drafts.length} of ${total} total loaded`;
+    const more = state.draftsHasMore ? `<button class="btn ghost" data-load-more="drafts">Load 50 More</button>` : '';
+    listPane.innerHTML = tools + rows + `<div class="actions bulk"><select id="bulk-action"><option value="feature">Feature</option><option value="unfeature">Unfeature</option><option value="revision">Return for revision</option><option value="reject">Reject</option></select><button class="btn ghost" data-bulk-apply>Apply to selected</button>${more}<span class="muted mono">${progress}</span></div>`;
+    $('#draft-sort').value = state.draftQuery.sort;
+    $('#draft-featured').value = state.draftQuery.featured;
     renderDraftDetail();
   }
 
   async function loadMoreDrafts() {
     if (state.draftsLoading || !state.draftsHasMore || !state.draftsCursor) return;
     state.draftsLoading = true;
-    renderDrafts();
     try {
-      const data = await api(`/drafts?cursor=${encodeURIComponent(state.draftsCursor)}`);
-      const seen = new Set(state.drafts.map((item) => item.id));
-      state.drafts.push(...(data.items || []).filter((item) => !seen.has(item.id)));
-      state.draftsCursor = data.nextCursor || null;
-      state.draftsHasMore = data.hasMore === true;
-    } catch (e) {
-      const root = view('drafts');
-      const detail = $('.detail-pane', root);
-      if (detail) detail.innerHTML = errorState(e.message);
-    } finally {
-      state.draftsLoading = false;
-      renderDrafts();
-    }
+      const data = await api('/drafts' + draftParams(state.draftsCursor));
+      const seen = new Set(state.drafts.map(x => x.id));
+      state.drafts.push(...data.items.filter(x => !seen.has(x.id)));
+      state.draftsCursor = data.nextCursor || null; state.draftsHasMore = data.hasMore === true;
+    } catch (e) { alert(e.message); } finally { state.draftsLoading = false; renderDrafts(); }
   }
 
   async function loadDraftDetail(pageId) {
     if (!pageId || state.draftDetails[pageId] || state.draftDetailLoading === pageId) return;
-    state.draftDetailLoading = pageId;
-    renderDraftDetail();
-    try {
-      state.draftDetails[pageId] = await api(`/drafts/${encodeURIComponent(pageId)}`);
-    } catch (e) {
-      state.draftDetails[pageId] = { error: e.message };
-    } finally {
-      state.draftDetailLoading = null;
-      renderDraftDetail();
-    }
+    state.draftDetailLoading = pageId; renderDraftDetail();
+    try { state.draftDetails[pageId] = await api(`/drafts/${encodeURIComponent(pageId)}`); }
+    catch (e) { state.draftDetails[pageId] = { error: e.message }; }
+    finally { state.draftDetailLoading = null; renderDraftDetail(); }
   }
 
   function renderDraftDetail() {
-    const root = view('drafts');
-    const summary = state.drafts[state.selectedDraft];
-    const pane = $('.detail-pane', root);
+    const root = view('drafts'), summary = state.drafts[state.selectedDraft], pane = $('.detail-pane', root);
     if (!summary || !pane) { if (pane) pane.innerHTML = ''; return; }
-
     const detail = state.draftDetails[summary.id];
-    if (!detail) {
-      pane.innerHTML = `<h2>${escapeHtml(summary.title || 'Untitled')}</h2>${loading('Loading video, transcript, and draft…')}`;
-      loadDraftDetail(summary.id);
-      return;
-    }
-    if (detail.error) {
-      pane.innerHTML = `<h2>${escapeHtml(summary.title || 'Untitled')}</h2>${errorState(detail.error)}`;
-      return;
-    }
-
+    if (!detail) { pane.innerHTML = `<h2>${escapeHtml(summary.title)}</h2>${loading('Loading review workspace…')}`; loadDraftDetail(summary.id); return; }
+    if (detail.error) { pane.innerHTML = errorState(detail.error); return; }
     pane.innerHTML = `
-      <h2>${escapeHtml(detail.title || 'Untitled')}${detail.featured ? ' <span class="star">⭐</span>' : ''}</h2>
+      <h2>${escapeHtml(detail.title || 'Untitled')}${detail.featured ? ' ⭐' : ''}</h2>
       ${videoEmbed(detail.videoUrl)}
-      <dl class="meta">
-        <dt>SEO Title</dt><dd>${escapeHtml(detail.seoTitle || '—')}</dd>
-        <dt>SEO Score</dt><dd class="mono">${detail.seoScore ?? '—'}</dd>
-        <dt>Focus KW</dt><dd>${escapeHtml(detail.focusKeyword || '—')}</dd>
-        <dt>Transcript</dt><dd class="mono">${detail.transcriptWordCount ?? 0} words</dd>
-        <dt>Draft</dt><dd class="mono">${detail.wordCount ?? 0} words</dd>
-      </dl>
-      <section class="review-section comparison-panel">
-        <h3>Key-Point Comparison</h3>
-        <div class="review-copy">${escapeHtml(detail.keyPointComparison || 'No cached comparison is available for this existing draft. New enhancements will generate one automatically.')}</div>
-      </section>
-      <div class="compare-grid">
-        <section class="review-section">
-          <h3>Original Transcript</h3>
-          <div class="review-copy">${escapeHtml(detail.transcript || 'Transcript unavailable.')}</div>
-        </section>
-        <section class="review-section">
-          <h3>Blog Draft</h3>
-          <div class="review-copy">${escapeHtml(detail.blogDraft || 'Blog draft unavailable.')}</div>
-        </section>
-      </div>
-      <div class="actions">
-        <a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Edit Draft ↗</a>
-        <button class="btn ${detail.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${escapeHtml(detail.id)}" data-val="${detail.featured ? 'false' : 'true'}">${detail.featured ? 'Unfeature' : 'Mark Featured'}</button>
-        <button class="btn green" data-act="approve-publish" data-id="${escapeHtml(detail.id)}">Approve for Publishing</button>
-      </div>
-      <div class="act-msg"></div>`;
+      <dl class="meta"><dt>SEO Title</dt><dd>${escapeHtml(detail.seoTitle || '—')}</dd><dt>SEO Score</dt><dd>${detail.seoScore ?? '—'}</dd><dt>Focus KW</dt><dd>${escapeHtml(detail.focusKeyword || '—')}</dd><dt>Transcript</dt><dd>${detail.transcriptWordCount} words</dd><dt>Draft</dt><dd>${detail.wordCount} words</dd></dl>
+      ${riskSummary(detail.keyPointComparison)}
+      <section class="review-section comparison-panel"><div class="section-head"><h3>Key-Point Comparison</h3><button class="btn ghost" data-act="generate-comparison" data-id="${detail.id}">${detail.keyPointComparison ? 'Regenerate' : 'Generate'} Comparison</button></div><div class="review-copy">${escapeHtml(detail.keyPointComparison || 'Generate a transcript-grounded comparison for this draft.')}</div></section>
+      <div class="compare-grid"><section class="review-section"><h3>Original Transcript</h3><div class="review-copy">${escapeHtml(detail.transcript || 'Unavailable')}</div></section>
+      <section class="review-section"><div class="section-head"><h3>Editable Blog Draft</h3><span id="draft-count" class="mono muted">${detail.wordCount} words</span></div><textarea id="draft-editor" class="draft-editor">${escapeHtml(detail.blogDraft || '')}</textarea><details><summary>Rendered HTML preview</summary><div id="draft-preview" class="draft-preview">${detail.blogDraft || ''}</div></details></section></div>
+      <label class="review-notes">Reviewer notes<textarea id="reviewer-notes">${escapeHtml(detail.reviewerNotes || '')}</textarea></label>
+      <details class="audit"><summary>Review audit history</summary><pre>${escapeHtml(detail.reviewAuditLog || 'No dashboard actions recorded yet.')}</pre></details>
+      <div class="actions"><a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Open in Notion ↗</a>
+      <button class="btn purple" data-act="save-draft" data-id="${detail.id}">Save Draft</button>
+      <button class="btn amber" data-act="return-revision" data-id="${detail.id}">Return for Revision</button>
+      <button class="btn red" data-act="reject" data-id="${detail.id}">Reject</button>
+      <button class="btn ${detail.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${detail.id}" data-val="${!detail.featured}">${detail.featured ? 'Unfeature' : 'Feature'}</button>
+      <button class="btn green" data-act="approve-publish" data-id="${detail.id}">Approve Publishing</button></div><div class="act-msg"></div>`;
   }
 
   // ── board ──────────────────────────────────────────────────────────────────
