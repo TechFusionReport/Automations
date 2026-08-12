@@ -170,6 +170,7 @@ export class EnhancementOrchestrator {
     title = '',
     videoId = '',
     sourceDescription = '',
+    transcript = '',
     seoDefaults = {}
   }) {
     const secrets = await this.getSecrets();
@@ -178,6 +179,7 @@ export class EnhancementOrchestrator {
 
     let groundingTitle = title || videoUrl;
     let groundingDesc = sourceDescription || '';
+    const sourceTranscript = String(transcript || '').trim().slice(0, 120000);
 
     if (videoId) {
       const ytDetails = await this.fetchYouTubeVideoDetails(videoId, secrets);
@@ -214,6 +216,8 @@ Category: ${category}
 Section: ${section}
 Tags: ${(tags || []).join(', ')}
 ${creatorGuidance}
+${sourceTranscript ? `Original Transcript:
+${sourceTranscript}` : 'Original Transcript: unavailable; rely only on the title and description above.'}
 
 Requirements:
 - 800–1200 words
@@ -229,6 +233,39 @@ Write the full blog post in HTML (use <h2>, <p>, <ul>, <li> tags).`;
 
     const blogDraft = await this.callGemini(blogPrompt, secrets, 0.75);
     if (!blogDraft || blogDraft.trim().length < 100) throw new Error('Gemini returned empty or insufficient blog draft');
+
+    const keyPointComparison = sourceTranscript
+      ? await this.callGemini(
+          `Compare the original transcript with the generated blog draft for a human editor.
+Do not introduce outside facts. Return concise plain text using exactly these headings:
+
+COVERED KEY POINTS
+- Points accurately represented in both
+
+OMITTED FROM DRAFT
+- Important transcript points missing from the draft
+
+POSSIBLY UNSUPPORTED IN DRAFT
+- Draft claims or details not clearly supported by the transcript
+
+CHANGED DETAILS
+- Names, numbers, quotes, or technical details that differ
+
+COVERAGE ESTIMATE
+- A cautious percentage estimate with one-sentence rationale
+
+ORIGINAL TRANSCRIPT:
+${sourceTranscript}
+
+BLOG DRAFT:
+${blogDraft}`,
+          secrets,
+          0.1
+        ).catch(e => {
+          console.warn('Key-point comparison failed:', e.message);
+          return '';
+        })
+      : '';
 
     const validationAnswer = await this.callGemini(
       `Does this article match the topic "${groundingTitle}"? Reply YES or NO only.\n\nArticle excerpt: ${blogDraft.substring(0, 300)}`,
@@ -355,6 +392,7 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
 
     const props = {};
     props['📝 Blog Draft'] = { rich_text: splitRichText(blogDraft) };
+    if (keyPointComparison) props['🔍 Key Point Comparison'] = { rich_text: splitRichText(keyPointComparison) };
     if (seoTitle) props['📰 SEO Title'] = { rich_text: [{ text: { content: seoTitle } }] };
     if (seoSlug) props['📰 SEO Slug'] = { rich_text: [{ text: { content: seoSlug } }] };
     if (seoMeta) props['📰 SEO Meta'] = { rich_text: [{ text: { content: seoMeta } }] };
@@ -394,6 +432,7 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
       searchIntent,
       schemaType,
       seoScore,
+      comparisonGenerated: Boolean(keyPointComparison),
       blogWordCount: blogDraft.split(/\s+/).length
     };
   }
