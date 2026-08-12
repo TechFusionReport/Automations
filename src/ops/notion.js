@@ -29,13 +29,20 @@ function truncate(str, len = DRAFT_PREVIEW_LEN) {
 }
 
 // ── request-body builders ────────────────────────────────────────────────────
-export function queryBody({ status, statuses, sorts, pageSize, cursor } = {}) {
+export function queryBody({ status, statuses, sorts, pageSize, cursor, title, category, source, featured } = {}) {
   const body = {};
+  const filters = [];
   if (Array.isArray(statuses) && statuses.length) {
-    body.filter = { or: statuses.map((name) => ({ property: P.status, status: { equals: name } })) };
+    filters.push({ or: statuses.map((name) => ({ property: P.status, status: { equals: name } })) });
   } else if (status) {
-    body.filter = { property: P.status, status: { equals: status } };
+    filters.push({ property: P.status, status: { equals: status } });
   }
+  if (title) filters.push({ property: P.title, title: { contains: title } });
+  if (category) filters.push({ property: P.category, select: { equals: category } });
+  if (source) filters.push({ property: P.source, multi_select: { contains: source } });
+  if (featured === true || featured === false) filters.push({ property: P.featured, checkbox: { equals: featured } });
+  if (filters.length === 1) body.filter = filters[0];
+  if (filters.length > 1) body.filter = { and: filters };
   if (sorts) body.sorts = sorts;
   if (pageSize) body.page_size = pageSize;
   if (cursor) body.start_cursor = cursor;
@@ -48,6 +55,13 @@ export function statusPatchBody(name) {
 
 export function featuredPatchBody(value) {
   return { [P.featured]: { checkbox: value === true } };
+}
+
+export function richTextPatchBody(name, value) {
+  const text = String(value || '');
+  const rich_text = [];
+  for (let i = 0; i < text.length; i += 2000) rich_text.push({ text: { content: text.slice(i, i + 2000) } });
+  return { [name]: { rich_text } };
 }
 
 // ── view mappers ─────────────────────────────────────────────────────────────
@@ -90,6 +104,9 @@ export function mapDraftDetail(page) {
     transcript,
     blogDraft,
     keyPointComparison: plainText(page, P.keyPointComparison),
+    reviewerNotes: plainText(page, P.reviewerNotes),
+    reviewAuditLog: plainText(page, P.reviewAuditLog),
+    comparisonGeneratedAt: getDate(page, P.comparisonGeneratedAt),
     transcriptWordCount: transcript ? transcript.split(/\s+/).filter(Boolean).length : 0,
     wordCount: blogDraft ? blogDraft.split(/\s+/).filter(Boolean).length : 0,
   };
