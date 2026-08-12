@@ -8,6 +8,8 @@ export const CATALOG_PROPERTIES = Object.freeze({
   title: 'Title',
   videoUrl: '🎬 Video URL',
   videoId: '🆔 Video ID',
+  transcript: '📄 Transcript',
+  keyPointComparison: '🔍 Key Point Comparison',
   category: '🗂️ Category',
   subcategory: '🗂️ Subcategory',
   tags: '🔖 Tags',
