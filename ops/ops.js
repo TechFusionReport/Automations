@@ -94,7 +94,16 @@ if (typeof document !== 'undefined') {
   const API = '/ops/api';
   const NOTION_DB = 'https://www.notion.so/1fbbd080de92804389aadc02853c15c7';
 
-  const state = { overview: null, queue: [], drafts: [], selectedQueue: null, selectedDraft: null };
+  const state = {
+    overview: null,
+    queue: [],
+    drafts: [],
+    draftsCursor: null,
+    draftsHasMore: false,
+    draftsLoading: false,
+    selectedQueue: null,
+    selectedDraft: null,
+  };
   const $ = (sel, root = document) => root.querySelector(sel);
   const view = (name) => $(`#view-${name}`);
 
@@ -281,6 +290,9 @@ if (typeof document !== 'undefined') {
     try {
       const data = await api('/drafts');
       state.drafts = data.items;
+      state.draftsCursor = data.nextCursor || null;
+      state.draftsHasMore = data.hasMore === true;
+      state.draftsLoading = false;
       renderDrafts();
     } catch (e) {
       $('.list-pane', root).innerHTML = errorState(e.message);
@@ -291,13 +303,40 @@ if (typeof document !== 'undefined') {
     const root = view('drafts');
     const listPane = $('.list-pane', root);
     if (!state.drafts.length) { listPane.innerHTML = empty('No drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
-    listPane.innerHTML = state.drafts.map((it, i) => `
+    const rows = state.drafts.map((it, i) => `
       <button class="row ${i === state.selectedDraft ? 'sel' : ''}" data-i="${i}">
         <span class="row-title">${escapeHtml(it.title || 'Untitled')}${it.featured ? ' ⭐' : ''}</span>
         <span class="row-sub muted mono">${it.wordCount}w · SEO ${it.seoScore ?? '—'}</span>
       </button>`).join('');
+    const total = state.overview?.kpis?.gate2Backlog;
+    const progress = total == null ? `${state.drafts.length} loaded` : `${state.drafts.length} of ${total} loaded`;
+    const more = state.draftsHasMore
+      ? `<div class="actions"><button class="btn ghost" data-load-more="drafts" ${state.draftsLoading ? 'disabled' : ''}>
+          ${state.draftsLoading ? 'Loading…' : 'Load 50 More'}</button><span class="muted mono">${progress}</span></div>`
+      : `<div class="actions"><span class="muted mono">${progress}</span></div>`;
+    listPane.innerHTML = rows + more;
     if (state.selectedDraft == null) state.selectedDraft = 0;
     renderDraftDetail();
+  }
+
+  async function loadMoreDrafts() {
+    if (state.draftsLoading || !state.draftsHasMore || !state.draftsCursor) return;
+    state.draftsLoading = true;
+    renderDrafts();
+    try {
+      const data = await api(`/drafts?cursor=${encodeURIComponent(state.draftsCursor)}`);
+      const seen = new Set(state.drafts.map((item) => item.id));
+      state.drafts.push(...(data.items || []).filter((item) => !seen.has(item.id)));
+      state.draftsCursor = data.nextCursor || null;
+      state.draftsHasMore = data.hasMore === true;
+    } catch (e) {
+      const root = view('drafts');
+      const detail = $('.detail-pane', root);
+      if (detail) detail.innerHTML = errorState(e.message);
+    } finally {
+      state.draftsLoading = false;
+      renderDrafts();
+    }
   }
 
   function renderDraftDetail() {
@@ -388,6 +427,8 @@ if (typeof document !== 'undefined') {
     document.body.addEventListener('click', (ev) => {
       const nav = ev.target.closest('[data-view]');
       if (nav) { ev.preventDefault(); switchView(nav.dataset.view); return; }
+      const more = ev.target.closest('[data-load-more="drafts"]');
+      if (more) { ev.preventDefault(); loadMoreDrafts(); return; }
       const row = ev.target.closest('.row');
       if (row) {
         const i = Number(row.dataset.i);
