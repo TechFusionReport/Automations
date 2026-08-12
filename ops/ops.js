@@ -87,6 +87,37 @@ export function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+export function youtubeEmbedUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    let id = '';
+    if (host === 'youtu.be') id = url.pathname.split('/').filter(Boolean)[0] || '';
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      id = url.searchParams.get('v') || '';
+      if (!id) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        if (['embed', 'shorts', 'live'].includes(parts[0])) id = parts[1] || '';
+      }
+    }
+    return /^[A-Za-z0-9_-]{6,20}$/.test(id) ? `https://www.youtube-nocookie.com/embed/${id}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function videoEmbed(url) {
+  const embed = youtubeEmbedUrl(url);
+  if (!embed) {
+    return url
+      ? `<div class="video-fallback"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
+      : '<div class="state empty">No original video URL available.</div>';
+  }
+  return `<div class="video-frame"><iframe src="${embed}" title="Original source video"
+    loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Everything below runs only in the browser.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -98,6 +129,8 @@ if (typeof document !== 'undefined') {
     overview: null,
     queue: [],
     drafts: [],
+    draftDetails: {},
+    draftDetailLoading: null,
     draftsCursor: null,
     draftsHasMore: false,
     draftsLoading: false,
@@ -268,6 +301,7 @@ if (typeof document !== 'undefined') {
     if (!it) { $('.detail-pane', root).innerHTML = ''; return; }
     $('.detail-pane', root).innerHTML = `
       <h2>${escapeHtml(it.title || 'Untitled')}</h2>
+      ${videoEmbed(it.videoUrl)}
       <dl class="meta">
         <dt>Source</dt><dd>${escapeHtml((it.source || []).join(', ') || '—')}</dd>
         <dt>Category</dt><dd>${escapeHtml(it.category || '—')} / ${escapeHtml(it.subcategory || '—')}</dd>
@@ -286,6 +320,8 @@ if (typeof document !== 'undefined') {
   // ── draft review (Gate 2) ──────────────────────────────────────────────────
   async function loadDrafts() {
     const root = view('drafts');
+    state.draftDetails = {};
+    state.draftDetailLoading = null;
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading drafts…')}</div><div class="detail-pane"></div></div>`;
     try {
       const data = await api('/drafts');
@@ -339,23 +375,65 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  async function loadDraftDetail(pageId) {
+    if (!pageId || state.draftDetails[pageId] || state.draftDetailLoading === pageId) return;
+    state.draftDetailLoading = pageId;
+    renderDraftDetail();
+    try {
+      state.draftDetails[pageId] = await api(`/drafts/${encodeURIComponent(pageId)}`);
+    } catch (e) {
+      state.draftDetails[pageId] = { error: e.message };
+    } finally {
+      state.draftDetailLoading = null;
+      renderDraftDetail();
+    }
+  }
+
   function renderDraftDetail() {
     const root = view('drafts');
-    const it = state.drafts[state.selectedDraft];
-    if (!it) { $('.detail-pane', root).innerHTML = ''; return; }
-    $('.detail-pane', root).innerHTML = `
-      <h2>${escapeHtml(it.title || 'Untitled')}${it.featured ? ' <span class="star">⭐</span>' : ''}</h2>
+    const summary = state.drafts[state.selectedDraft];
+    const pane = $('.detail-pane', root);
+    if (!summary || !pane) { if (pane) pane.innerHTML = ''; return; }
+
+    const detail = state.draftDetails[summary.id];
+    if (!detail) {
+      pane.innerHTML = `<h2>${escapeHtml(summary.title || 'Untitled')}</h2>${loading('Loading video, transcript, and draft…')}`;
+      loadDraftDetail(summary.id);
+      return;
+    }
+    if (detail.error) {
+      pane.innerHTML = `<h2>${escapeHtml(summary.title || 'Untitled')}</h2>${errorState(detail.error)}`;
+      return;
+    }
+
+    pane.innerHTML = `
+      <h2>${escapeHtml(detail.title || 'Untitled')}${detail.featured ? ' <span class="star">⭐</span>' : ''}</h2>
+      ${videoEmbed(detail.videoUrl)}
       <dl class="meta">
-        <dt>SEO Title</dt><dd>${escapeHtml(it.seoTitle || '—')}</dd>
-        <dt>SEO Score</dt><dd class="mono">${it.seoScore ?? '—'}</dd>
-        <dt>Focus KW</dt><dd>${escapeHtml(it.focusKeyword || '—')}</dd>
-        <dt>Length</dt><dd class="mono">${it.wordCount} words</dd>
+        <dt>SEO Title</dt><dd>${escapeHtml(detail.seoTitle || '—')}</dd>
+        <dt>SEO Score</dt><dd class="mono">${detail.seoScore ?? '—'}</dd>
+        <dt>Focus KW</dt><dd>${escapeHtml(detail.focusKeyword || '—')}</dd>
+        <dt>Transcript</dt><dd class="mono">${detail.transcriptWordCount ?? 0} words</dd>
+        <dt>Draft</dt><dd class="mono">${detail.wordCount ?? 0} words</dd>
       </dl>
-      <div class="draft-preview">${escapeHtml(it.draftPreview || 'No draft content.')}</div>
+      <section class="review-section comparison-panel">
+        <h3>Key-Point Comparison</h3>
+        <div class="review-copy">${escapeHtml(detail.keyPointComparison || 'No cached comparison is available for this existing draft. New enhancements will generate one automatically.')}</div>
+      </section>
+      <div class="compare-grid">
+        <section class="review-section">
+          <h3>Original Transcript</h3>
+          <div class="review-copy">${escapeHtml(detail.transcript || 'Transcript unavailable.')}</div>
+        </section>
+        <section class="review-section">
+          <h3>Blog Draft</h3>
+          <div class="review-copy">${escapeHtml(detail.blogDraft || 'Blog draft unavailable.')}</div>
+        </section>
+      </div>
       <div class="actions">
-        <a class="btn ghost" href="${escapeHtml(it.notionUrl)}" target="_blank" rel="noopener">Edit Draft ↗</a>
-        <button class="btn ${it.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${escapeHtml(it.id)}" data-val="${it.featured ? 'false' : 'true'}">${it.featured ? 'Unfeature' : 'Mark Featured'}</button>
-        <button class="btn green" data-act="approve-publish" data-id="${escapeHtml(it.id)}">Approve for Publishing</button>
+        <a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Edit Draft ↗</a>
+        <button class="btn ${detail.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${escapeHtml(detail.id)}" data-val="${detail.featured ? 'false' : 'true'}">${detail.featured ? 'Unfeature' : 'Mark Featured'}</button>
+        <button class="btn green" data-act="approve-publish" data-id="${escapeHtml(detail.id)}">Approve for Publishing</button>
       </div>
       <div class="act-msg"></div>`;
   }
