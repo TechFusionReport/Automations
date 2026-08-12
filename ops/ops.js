@@ -107,14 +107,22 @@ export function youtubeEmbedUrl(rawUrl) {
 }
 
 function videoEmbed(url) {
-  const embed = youtubeEmbedUrl(url);
-  if (!embed) {
-    return url
-      ? `<div class="video-fallback"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
-      : '<div class="state empty">No original video URL available.</div>';
-  }
-  return `<div class="video-frame"><iframe src="${embed}" title="Original source video"
-    loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  let embed = youtubeEmbedUrl(url);
+  try {
+    const u = new URL(url);
+    if (!embed && /(^|\.)vimeo\.com$/i.test(u.hostname)) {
+      const id = u.pathname.split('/').filter(Boolean).find(x => /^\d+$/.test(x));
+      if (id) embed = `https://player.vimeo.com/video/${id}`;
+    }
+    if (!embed && /\.(mp4|webm|ogg)$/i.test(u.pathname)) {
+      return `<video class="video-direct" controls preload="metadata" src="${escapeHtml(url)}"></video>`;
+    }
+  } catch { /* fallback below */ }
+  if (!embed) return url
+    ? `<div class="video-fallback"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
+    : '<div class="state empty">No original video URL available.</div>';
+  return `<div class="video-frame"><iframe src="${embed}" title="Original source video" loading="lazy"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
     referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`;
 }
 
@@ -409,7 +417,7 @@ if (typeof document !== 'undefined') {
       ${riskSummary(detail.keyPointComparison)}
       <section class="review-section comparison-panel"><div class="section-head"><h3>Key-Point Comparison</h3><button class="btn ghost" data-act="generate-comparison" data-id="${detail.id}">${detail.keyPointComparison ? 'Regenerate' : 'Generate'} Comparison</button></div><div class="review-copy">${escapeHtml(detail.keyPointComparison || 'Generate a transcript-grounded comparison for this draft.')}</div></section>
       <div class="compare-grid"><section class="review-section"><h3>Original Transcript</h3><div class="review-copy">${escapeHtml(detail.transcript || 'Unavailable')}</div></section>
-      <section class="review-section"><div class="section-head"><h3>Editable Blog Draft</h3><span id="draft-count" class="mono muted">${detail.wordCount} words</span></div><textarea id="draft-editor" class="draft-editor">${escapeHtml(detail.blogDraft || '')}</textarea><details><summary>Rendered HTML preview</summary><div id="draft-preview" class="draft-preview">${detail.blogDraft || ''}</div></details></section></div>
+      <section class="review-section"><div class="section-head"><h3>Editable Blog Draft</h3><span id="draft-count" class="mono muted">${detail.wordCount} words</span></div><textarea id="draft-editor" class="draft-editor">${escapeHtml(detail.blogDraft || '')}</textarea><details><summary>Rendered HTML preview</summary><iframe id="draft-preview" class="draft-preview" sandbox srcdoc="${escapeHtml(detail.blogDraft || '')}"></iframe></details></section></div>
       <label class="review-notes">Reviewer notes<textarea id="reviewer-notes">${escapeHtml(detail.reviewerNotes || '')}</textarea></label>
       <details class="audit"><summary>Review audit history</summary><pre>${escapeHtml(detail.reviewAuditLog || 'No dashboard actions recorded yet.')}</pre></details>
       <div class="actions"><a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Open in Notion ↗</a>
@@ -457,48 +465,88 @@ if (typeof document !== 'undefined') {
   }
 
   // ── action handling (event delegation) ─────────────────────────────────────
-  async function runAction(btn) {
-    const act = btn.dataset.act;
-    const pageId = btn.dataset.id;
-    const msg = btn.closest('.detail-pane')?.querySelector('.act-msg');
-    const body = { pageId };
-    if (act === 'toggle-featured') body.value = btn.dataset.val === 'true';
-    btn.disabled = true;
-    if (msg) msg.innerHTML = loading('Working…');
-    try {
-      await api(`/actions/${act}`, { method: 'POST', body: JSON.stringify(body) });
-      // Refresh the relevant list + badges.
-      const o = await api('/overview'); state.overview = o; setBadges();
-      if (act === 'toggle-featured') {
-        await loadDrafts();
-      } else if (view('queue').classList.contains('active')) {
-        state.selectedQueue = null; await loadQueue();
-      } else {
-        state.selectedDraft = null; await loadDrafts();
-      }
-    } catch (e) {
-      btn.disabled = false;
-      if (msg) msg.innerHTML = errorState(e.message);
-    }
+  function toast(message, bad = false) {
+    let el = $('#ops-toast');
+    if (!el) { el = document.createElement('div'); el.id = 'ops-toast'; document.body.appendChild(el); }
+    el.className = `toast ${bad ? 'bad' : 'ok'}`; el.textContent = message; el.hidden = false;
+    clearTimeout(el._timer); el._timer = setTimeout(() => { el.hidden = true; }, 5000);
   }
 
-  // ── init ───────────────────────────────────────────────────────────────────
+  async function runAction(btn) {
+    const act = btn.dataset.act, pageId = btn.dataset.id;
+    const destructive = ['reject', 'return-revision', 'approve-publish', 'generate-comparison'];
+    if (destructive.includes(act) && !confirm(`${act.replaceAll('-', ' ')} for this record?`)) return;
+    const body = { pageId };
+    const editor = $('#draft-editor'), notes = $('#reviewer-notes');
+    if (act === 'toggle-featured') body.value = btn.dataset.val === 'true';
+    if (['save-draft', 'return-revision', 'reject', 'approve-publish'].includes(act)) {
+      body.blogDraft = editor?.value; body.reviewerNotes = notes?.value;
+      if (act === 'return-revision' || act === 'reject') body.note = prompt('Reason / requested change (required):') || '';
+      if ((act === 'return-revision' || act === 'reject') && !body.note) return;
+    }
+    btn.disabled = true;
+    try {
+      const result = await api(`/actions/${act}`, { method: 'POST', body: JSON.stringify(body) });
+      state.dirtyDraft = false; toast(result.message || 'Saved successfully');
+      if (act === 'generate-comparison') {
+        const d = state.draftDetails[pageId]; d.keyPointComparison = result.comparison; d.comparisonGeneratedAt = result.generatedAt; renderDraftDetail();
+      } else if (act === 'save-draft') {
+        const d = state.draftDetails[pageId]; d.blogDraft = body.blogDraft; d.reviewerNotes = body.reviewerNotes; renderDraftDetail();
+      } else {
+        const o = await api('/overview'); state.overview = o; setBadges();
+        if (view('queue').classList.contains('active')) { state.selectedQueue = null; await loadQueue(); }
+        else await loadDrafts();
+      }
+    } catch (e) { btn.disabled = false; toast(e.message, true); }
+  }
+
+  async function runBulk() {
+    const ids = [...state.selectedDraftIds], action = $('#bulk-action')?.value;
+    if (!ids.length) return toast('Select at least one draft', true);
+    if (!confirm(`${action} ${ids.length} selected records? Bulk publishing is never permitted.`)) return;
+    const note = ['reject', 'revision'].includes(action) ? (prompt('Reason / requested change (required):') || '') : '';
+    if (['reject', 'revision'].includes(action) && !note) return;
+    try {
+      const r = await api('/actions/bulk', { method: 'POST', body: JSON.stringify({ pageIds: ids, action, note }) });
+      state.selectedDraftIds.clear(); toast(r.message); await loadDrafts();
+    } catch (e) { toast(e.message, true); }
+  }
+
   function init() {
+    document.body.addEventListener('input', (ev) => {
+      if (ev.target.id === 'draft-editor') {
+        state.dirtyDraft = true;
+        const words = ev.target.value.trim().split(/\s+/).filter(Boolean).length;
+        if ($('#draft-count')) $('#draft-count').textContent = `${words} words · unsaved`;
+        if ($('#draft-preview')) $('#draft-preview').srcdoc = ev.target.value;
+      }
+      if (ev.target.id === 'reviewer-notes') state.dirtyDraft = true;
+    });
+    document.body.addEventListener('change', (ev) => {
+      const cb = ev.target.closest('[data-select-draft]');
+      if (cb) { cb.checked ? state.selectedDraftIds.add(cb.dataset.selectDraft) : state.selectedDraftIds.delete(cb.dataset.selectDraft); }
+    });
     document.body.addEventListener('click', (ev) => {
       const nav = ev.target.closest('[data-view]');
-      if (nav) { ev.preventDefault(); switchView(nav.dataset.view); return; }
+      if (nav) { ev.preventDefault(); if (state.dirtyDraft && !confirm('Discard unsaved draft changes?')) return; switchView(nav.dataset.view); return; }
+      if (ev.target.closest('[data-filter-drafts]')) {
+        state.draftQuery = { q: $('#draft-search').value.trim(), sort: $('#draft-sort').value, featured: $('#draft-featured').value }; loadDrafts(); return;
+      }
+      if (ev.target.closest('[data-bulk-apply]')) { runBulk(); return; }
       const more = ev.target.closest('[data-load-more="drafts"]');
-      if (more) { ev.preventDefault(); loadMoreDrafts(); return; }
+      if (more) { loadMoreDrafts(); return; }
       const row = ev.target.closest('.row');
       if (row) {
+        if (state.dirtyDraft && !confirm('Discard unsaved draft changes?')) return;
         const i = Number(row.dataset.i);
         if (view('queue').classList.contains('active')) { state.selectedQueue = i; renderQueue(); }
-        else { state.selectedDraft = i; renderDrafts(); }
+        else { state.selectedDraft = i; state.dirtyDraft = false; renderDrafts(); }
         return;
       }
       const actBtn = ev.target.closest('[data-act]');
       if (actBtn) { ev.preventDefault(); runAction(actBtn); }
     });
+    window.addEventListener('beforeunload', (ev) => { if (state.dirtyDraft) { ev.preventDefault(); ev.returnValue = ''; } });
     switchView('dashboard');
   }
 
