@@ -7,7 +7,7 @@
 import { verifyAccessRequest } from './access.js';
 import {
   notionClient, queryBody, statusPatchBody, featuredPatchBody,
-  mapQueueItem, mapDraftItem, mapBoardItem, mapErrorItem, mapArchiveItem,
+  mapQueueItem, mapDraftItem, mapDraftDetail, mapBoardItem, mapErrorItem, mapArchiveItem,
   countsFromCache, COUNTED_STATUSES, IN_PIPELINE_STATUSES,
 } from './notion.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
@@ -234,6 +234,11 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
 
   try {
     if (request.method === 'GET') {
+      if (sub.startsWith('/drafts/')) {
+        const pageId = sub.slice('/drafts/'.length);
+        if (!/^[0-9a-f-]{32,36}$/i.test(pageId)) return json({ error: 'invalid pageId' }, 400);
+        return json(mapDraftDetail(await client.retrieve(pageId)));
+      }
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
         case '/queue': return json(await listQueue(client, dbId));
