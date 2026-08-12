@@ -437,9 +437,9 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
     };
   }
 
-  async processMessage({ type, notionPageId, videoUrl, category, section, tags, seoDefaults }) {
+  async processMessage({ type, notionPageId, videoUrl, category, section, tags, transcript, seoDefaults }) {
     if (type === 'enhance' || type === 'research' || type === 'structure' || type === 'factcheck' || type === 'finalize') {
-      return await this.start({ notionPageId, videoUrl, category, section, tags, seoDefaults });
+      return await this.start({ notionPageId, videoUrl, category, section, tags, transcript, seoDefaults });
     }
   }
 }
