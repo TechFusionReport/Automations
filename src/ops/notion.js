@@ -75,9 +75,23 @@ export function mapDraftItem(page) {
     seoScore: getNumber(page, P.seoScore),
     focusKeyword: plainText(page, P.focusKeyword),
     featured: getCheckbox(page, P.featured),
+    videoUrl: getUrl(page, P.videoUrl),
     draftPreview: truncate(draft),
     wordCount: draft ? draft.split(/\s+/).filter(Boolean).length : 0,
     createdTime: page.created_time ?? null,
+  };
+}
+
+export function mapDraftDetail(page) {
+  const transcript = plainText(page, P.transcript);
+  const blogDraft = plainText(page, P.blogDraft);
+  return {
+    ...mapDraftItem(page),
+    transcript,
+    blogDraft,
+    keyPointComparison: plainText(page, P.keyPointComparison),
+    transcriptWordCount: transcript ? transcript.split(/\s+/).filter(Boolean).length : 0,
+    wordCount: blogDraft ? blogDraft.split(/\s+/).filter(Boolean).length : 0,
   };
 }
 
@@ -136,6 +150,10 @@ export function notionClient(token, { fetchImpl = fetch } = {}) {
         method: 'POST', headers, body: JSON.stringify(body || {}),
       });
       return readOrThrow(res, 'query');
+    },
+    async retrieve(pageId) {
+      const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, { headers });
+      return readOrThrow(res, 'retrieve');
     },
     async patch(pageId, properties) {
       const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, {
