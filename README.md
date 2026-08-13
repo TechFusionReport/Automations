@@ -1,13 +1,12 @@
-# Automations
-Personal &amp; Business Automations
-This repo will be the launching point for all automations, both personal and professional, going formward. Each Automations name and description is below as well as the links for theste by step guide and final product. 
+# TechFusion Report Automations
 
-**|| Automation Title ||** 
-Gmail - Newsletter Summarization
+Cloudflare Workers automation for the TechFusion Report content pipeline. Notion remains the source of truth for workflow and content state.
 
-**|| Description ||**
-This automation moitors my admin@techfusionreport.com email account for emails from specific senders and when they arrive, the emails is sent to ChatGPT for summarization and once the summary has been completed the information will be sent to notion to update an existing database. 
+The production flow is discovery → Content Catalog v2 → enhancement → publishing. Active LLM work is routed centrally through the self-hosted OmniRoute `TFR Free Chain`, with a controlled direct-Gemini fallback for OmniRoute outages. See [OmniRoute integration](docs/omniroute.md) for configuration, architecture, telemetry, and troubleshooting.
 
-**|| Step by Stap Guide||**
-https://www.notion.so/techfusionreport/Newsletter-Email-Monitoring-Script-103bd080de9280e383bed63cda80a000?pvs=4
+Run the available tests with:
+
+```sh
+node --test tests/*.test.js tests/*.test.mjs
+```
                    

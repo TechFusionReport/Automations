@@ -34,6 +34,13 @@ max_batch_timeout = 30
 
 [vars]
 NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
+# Central LLM routing. If OmniRoute auth is enabled, store the credential in
+# CONTENT_KV's `secrets` object as `omniroute_api_key`; never commit it here.
+OMNIROUTE_ENABLED = "true"
+OMNIROUTE_BASE_URL = "https://omniroute.techfusionreport.com"
+OMNIROUTE_CHAIN = "TFR Free Chain"
+OMNIROUTE_TIMEOUT_MS = "30000"
+OMNIROUTE_FALLBACK_ENABLED = "true"
 # Cloudflare Access for the /ops dashboard API. Fill both in AFTER creating the
 # Access application for techfusionreport.com/ops (see docs spec §4.2):
 #   ACCESS_TEAM_DOMAIN — your team subdomain only, e.g. "techfusion"
