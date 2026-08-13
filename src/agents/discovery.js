@@ -14,6 +14,8 @@
 //          in the batch with "Too many subrequests by single Worker invocation."
 //          Now fetches sequentially and stops early once enough stories qualify.
 
+import { createLlmClient } from '../utils/llm-client.mjs';
+
 const CONTENT_TYPE_MAP = {
   '|| Tech ||':          { section: 'Technology',    category: 'Technology' },
   '|| Entertainment ||': { section: 'Entertainment', category: 'Entertainment' },
@@ -374,7 +376,7 @@ class DiscoveryAgent {
       const kvKey = `video:${videoId}`;
       if (await this.env.CONTENT_KV.get(kvKey)) continue;
 
-      // FIX: pass config so scoreContent can read gemini_api_key from KV secrets
+      // Pass shared secrets/config to the centralized LLM client.
       const score = await this.scoreContent(item.title, item.description, channel.category, config);
 
       if (score > channel.minScore) {
@@ -515,38 +517,17 @@ class DiscoveryAgent {
     return 'Technology';
   }
 
-  // AI Scoring
-  // FIX: accepts config param and reads gemini_api_key from KV secrets.
-  // Falls back to env binding if present (future-proofing for direct env var setup).
+  // AI scoring routes through the shared LLM client. OmniRoute owns provider
+  // selection; the client preserves the existing direct-Gemini outage fallback.
   async scoreContent(title, description, category, config = {}) {
-    const geminiKey = config.gemini_api_key || this.env.GEMINI_API_KEY;
-
-    if (!geminiKey) {
-      console.warn('scoreContent: no Gemini API key found - defaulting to 50');
-      return 50;
-    }
-
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: `Score 0-100 for ${category} tech blog relevance.\nTitle: "${title}"\nDescription: "${(description || '').slice(0, 500)}"\nReturn only the number.`
-              }]
-            }]
-          })
-        }
-      );
-      const data = await res.json();
-      if (data.error) {
-        console.error('Gemini scoring error:', JSON.stringify(data.error));
-        return 50;
-      }
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '50';
+      const { text } = await createLlmClient(this.env, config).completeText({
+        workflow: 'discovery.score-content',
+        prompt: `Score 0-100 for ${category} tech blog relevance.\nTitle: "${title}"\nDescription: "${(description || '').slice(0, 500)}"\nReturn only the number.`,
+        temperature: 0,
+        maxTokens: 8,
+        legacyModel: 'gemini-2.0-flash'
+      });
       const m = text.match(/\d+/);
       return m ? parseInt(m[0]) : 50;
     } catch (e) {

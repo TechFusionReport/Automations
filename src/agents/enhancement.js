@@ -1,6 +1,8 @@
 // Enhancement Agent — TechFusion Report
-// Synchronous single-pass enhancement using Gemini.
+// Synchronous single-pass enhancement through the shared LLM router.
 // Reads secrets from CONTENT_KV, writes draft + full SEO package to Notion.
+
+import { createLlmClient } from '../utils/llm-client.mjs';
 
 function splitRichText(text, maxChunk = 2000) {
   const chunks = [];
@@ -119,25 +121,15 @@ export class EnhancementOrchestrator {
     return raw ? JSON.parse(raw) : {};
   }
 
-  async callGemini(prompt, secrets, temperature = 0.7) {
-    const key = secrets.gemini_api_key;
-    if (!key) throw new Error('gemini_api_key missing from secrets');
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature, maxOutputTokens: 4096 }
-        })
-      }
-    );
-
-    if (!res.ok) throw new Error(`Gemini API error: ${res.status} ${await res.text()}`);
-    const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  async callLlm(prompt, secrets, temperature = 0.7) {
+    const { text } = await createLlmClient(this.env, secrets).completeText({
+      workflow: 'enhancement.generate',
+      prompt,
+      temperature,
+      maxTokens: 4096,
+      legacyModel: 'gemini-2.5-flash'
+    });
+    return text;
   }
 
   async generateKeyPointComparison(transcript, blogDraft) {
@@ -145,7 +137,7 @@ export class EnhancementOrchestrator {
     const draft = String(blogDraft || '').trim().slice(0, 120000);
     if (!sourceTranscript || !draft) throw new Error('Transcript and blog draft are required');
     const secrets = await this.getSecrets();
-    return this.callGemini(`Compare the original transcript with the generated blog draft for a human editor.
+    return this.callLlm(`Compare the original transcript with the generated blog draft for a human editor.
 Do not introduce outside facts. Return concise plain text using exactly these headings:
 
 COVERED KEY POINTS
@@ -261,11 +253,11 @@ Requirements:
 
 Write the full blog post in HTML (use <h2>, <p>, <ul>, <li> tags).`;
 
-    const blogDraft = await this.callGemini(blogPrompt, secrets, 0.75);
-    if (!blogDraft || blogDraft.trim().length < 100) throw new Error('Gemini returned empty or insufficient blog draft');
+    const blogDraft = await this.callLlm(blogPrompt, secrets, 0.75);
+    if (!blogDraft || blogDraft.trim().length < 100) throw new Error('LLM returned empty or insufficient blog draft');
 
     const keyPointComparison = sourceTranscript
-      ? await this.callGemini(
+      ? await this.callLlm(
           `Compare the original transcript with the generated blog draft for a human editor.
 Do not introduce outside facts. Return concise plain text using exactly these headings:
 
@@ -297,7 +289,7 @@ ${blogDraft}`,
         })
       : '';
 
-    const validationAnswer = await this.callGemini(
+    const validationAnswer = await this.callLlm(
       `Does this article match the topic "${groundingTitle}"? Reply YES or NO only.\n\nArticle excerpt: ${blogDraft.substring(0, 300)}`,
       secrets,
       0.1
@@ -340,7 +332,7 @@ FAQ1A: [answer]
 FAQ2Q: [question]
 FAQ2A: [answer]`;
 
-    const seoRaw = await this.callGemini(seoPrompt, secrets, 0.25);
+    const seoRaw = await this.callLlm(seoPrompt, secrets, 0.25);
 
     const seoTitle = getLine(seoRaw, 'TITLE').slice(0, 70);
     const seoSlug = safeSlug(getLine(seoRaw, 'SLUG') || seoTitle || groundingTitle);
@@ -404,7 +396,7 @@ TWITTER: [tweet, max 240 chars, include relevant hashtags]
 INSTAGRAM: [Instagram caption, 2-3 sentences + hashtags]
 LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
 
-    const socialRaw = await this.callGemini(socialPrompt, secrets, 0.7);
+    const socialRaw = await this.callLlm(socialPrompt, secrets, 0.7);
     const twitter = socialRaw.match(/TWITTER:\s*(.+)/)?.[1]?.trim() || '';
     const instagram = socialRaw.match(/INSTAGRAM:\s*(.+)/)?.[1]?.trim() || '';
     const linkedin = socialRaw.match(/LINKEDIN:\s*(.+)/)?.[1]?.trim() || '';

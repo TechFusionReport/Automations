@@ -116,7 +116,8 @@ Secrets stored in **Cloudflare KV** under key `secrets`. Never hardcode keys, co
 ## 🔑 Secrets Reference (names only)
 - `NOTION_TOKEN`
 - `YOUTUBE_API_KEY`
-- `GEMINI_API_KEY`
+- `GEMINI_API_KEY` (OmniRoute outage fallback)
+- `OMNIROUTE_API_KEY` (optional; only if gateway authentication is enabled)
 - `GITHUB_PAT`
 
 All rotated March 2026. Retrieve from Cloudflare KV only.
