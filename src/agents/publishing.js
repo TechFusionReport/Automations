@@ -1,5 +1,6 @@
 import { AffiliateInserter } from '../utils/affiliates.js';
 import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
+import { createLlmClient } from '../utils/llm-client.mjs';
 
 export class PublishingAgent {
   constructor(env) {
@@ -475,14 +476,13 @@ Format clearly.`;
 
     try {
       const secrets = await this.getSecrets();
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${secrets.gemini_api_key}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      const { text } = await createLlmClient(this.env, secrets).completeText({
+        workflow: 'publishing.social-content',
+        prompt,
+        temperature: 0.7,
+        maxTokens: 1024,
+        legacyModel: 'gemini-2.5-flash'
       });
-
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
       return {
         twitter: this.extractSection(text, 'Twitter') || `🚀 ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
