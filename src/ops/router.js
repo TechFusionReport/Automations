@@ -6,11 +6,12 @@
 
 import { verifyAccessRequest } from './access.js';
 import {
-  notionClient, queryBody, statusPatchBody, featuredPatchBody,
-  mapQueueItem, mapDraftItem, mapBoardItem, mapErrorItem, mapArchiveItem,
+  notionClient, queryBody, statusPatchBody, featuredPatchBody, richTextPatchBody,
+  mapQueueItem, mapDraftItem, mapDraftDetail, mapBoardItem, mapErrorItem, mapArchiveItem,
   countsFromCache, COUNTED_STATUSES, IN_PIPELINE_STATUSES,
 } from './notion.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
+import { EnhancementOrchestrator } from '../agents/enhancement.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -34,10 +35,30 @@ async function listQueue(client, dbId) {
   return { items, count: items.length };
 }
 
-async function listDrafts(client, dbId) {
-  const data = await client.query(dbId, queryBody({ statuses: [S.draftGenerated, S.draftReview], sorts: SORT_CREATED_ASC, pageSize: 50 }));
+async function listDrafts(client, dbId, cursor, filters = {}) {
+  const sortMap = {
+    oldest: SORT_CREATED_ASC,
+    newest: [{ timestamp: 'created_time', direction: 'descending' }],
+    seoHigh: [{ property: P.seoScore, direction: 'descending' }],
+    seoLow: [{ property: P.seoScore, direction: 'ascending' }],
+  };
+  const data = await client.query(dbId, queryBody({
+    statuses: [S.draftGenerated, S.draftReview],
+    sorts: sortMap[filters.sort] || SORT_CREATED_ASC,
+    pageSize: 50,
+    cursor,
+    title: filters.title,
+    category: filters.category,
+    source: filters.source,
+    featured: filters.featured,
+  }));
   const items = (data.results || []).map(mapDraftItem);
-  return { items, count: items.length };
+  return {
+    items,
+    count: items.length,
+    nextCursor: data.has_more ? data.next_cursor : null,
+    hasMore: Boolean(data.has_more),
+  };
 }
 
 async function listErrors(client, dbId, pageSize = 50) {
@@ -198,6 +219,13 @@ async function countFeatured(client, dbId) {
   return count;
 }
 
+async function auditedProperties(client, pageId, actor, action, changes = {}, note = '') {
+  const detail = mapDraftDetail(await client.retrieve(pageId));
+  const entry = `[${new Date().toISOString()}] ${actor || 'unknown'} — ${action}${note ? ` — ${note}` : ''}`;
+  const audit = [detail.reviewAuditLog, entry].filter(Boolean).join('\n').slice(-15000);
+  return { detail, properties: { ...changes, ...richTextPatchBody(P.reviewAuditLog, audit) } };
+}
+
 // ── gate actions ─────────────────────────────────────────────────────────────
 const ACTION_STATUS = {
   '/actions/approve-transcription': S.transcriptionApproved,
@@ -224,10 +252,21 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
 
   try {
     if (request.method === 'GET') {
+      if (sub.startsWith('/drafts/')) {
+        const pageId = sub.slice('/drafts/'.length);
+        if (!/^[0-9a-f-]{32,36}$/i.test(pageId)) return json({ error: 'invalid pageId' }, 400);
+        return json(mapDraftDetail(await client.retrieve(pageId)));
+      }
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
         case '/queue': return json(await listQueue(client, dbId));
-        case '/drafts': return json(await listDrafts(client, dbId));
+        case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor'), {
+          title: url.searchParams.get('q') || '',
+          category: url.searchParams.get('category') || '',
+          source: url.searchParams.get('source') || '',
+          featured: url.searchParams.has('featured') ? url.searchParams.get('featured') === 'true' : undefined,
+          sort: url.searchParams.get('sort') || 'oldest',
+        }));
         case '/board': return json(await listBoard(env, dbId, client, ctx, now));
         case '/errors': return json(await listErrors(client, dbId));
         case '/archive': return json(await listArchive(client, dbId, url.searchParams.get('cursor')));
@@ -238,16 +277,60 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
     if (request.method === 'POST' && sub.startsWith('/actions/')) {
       const body = await request.json().catch(() => ({}));
       const pageId = body.pageId;
-      if (!pageId) return json({ error: 'pageId required' }, 400);
+      const actor = auth.email || auth.sub || 'access-user';
+      const validId = (id) => /^[0-9a-f-]{32,36}$/i.test(String(id || ''));
 
-      if (sub === '/actions/toggle-featured') {
-        await client.patch(pageId, featuredPatchBody(body.value === true));
-        return json({ ok: true, pageId, featured: body.value === true });
+      if (sub === '/actions/bulk') {
+        const ids = Array.isArray(body.pageIds) ? [...new Set(body.pageIds)].filter(validId).slice(0, 25) : [];
+        const allowed = { feature: true, unfeature: false, reject: S.rejected, revision: S.draftReview };
+        if (!ids.length) return json({ error: '1–25 valid pageIds required' }, 400);
+        if (!(body.action in allowed)) return json({ error: 'Bulk publishing is not allowed' }, 400);
+        for (const id of ids) {
+          const change = ['feature', 'unfeature'].includes(body.action)
+            ? featuredPatchBody(allowed[body.action])
+            : statusPatchBody(allowed[body.action]);
+          const audited = await auditedProperties(client, id, actor, `bulk:${body.action}`, change, body.note);
+          await client.patch(id, audited.properties);
+        }
+        return json({ ok: true, updated: ids.length, message: `${ids.length} records updated` });
       }
-      const nextStatus = ACTION_STATUS[sub];
-      if (!nextStatus) return json({ error: 'not found' }, 404);
-      await client.patch(pageId, statusPatchBody(nextStatus));
-      return json({ ok: true, pageId, status: nextStatus });
+
+      if (!validId(pageId)) return json({ error: 'valid pageId required' }, 400);
+
+      if (sub === '/actions/generate-comparison') {
+        const { detail } = await auditedProperties(client, pageId, actor, 'generate comparison');
+        const comparison = await new EnhancementOrchestrator(env).generateKeyPointComparison(detail.transcript, detail.blogDraft);
+        const changes = {
+          ...richTextPatchBody(P.keyPointComparison, comparison),
+          [P.comparisonGeneratedAt]: { date: { start: new Date().toISOString() } },
+        };
+        const audited = await auditedProperties(client, pageId, actor, 'comparison generated', changes);
+        await client.patch(pageId, audited.properties);
+        return json({ ok: true, comparison, generatedAt: new Date().toISOString(), message: 'Comparison generated' });
+      }
+
+      if (sub === '/actions/save-draft') {
+        const changes = {
+          ...richTextPatchBody(P.blogDraft, body.blogDraft),
+          ...richTextPatchBody(P.reviewerNotes, body.reviewerNotes),
+        };
+        const audited = await auditedProperties(client, pageId, actor, 'draft saved', changes, body.note);
+        await client.patch(pageId, audited.properties);
+        return json({ ok: true, message: 'Draft and review notes saved' });
+      }
+
+      let changes;
+      let action = sub.slice('/actions/'.length);
+      if (sub === '/actions/toggle-featured') changes = featuredPatchBody(body.value === true);
+      else {
+        const nextStatus = ACTION_STATUS[sub] || (sub === '/actions/return-revision' ? S.draftReview : null);
+        if (!nextStatus) return json({ error: 'not found' }, 404);
+        changes = statusPatchBody(nextStatus);
+      }
+      if (body.reviewerNotes != null) changes = { ...changes, ...richTextPatchBody(P.reviewerNotes, body.reviewerNotes) };
+      const audited = await auditedProperties(client, pageId, actor, action, changes, body.note);
+      await client.patch(pageId, audited.properties);
+      return json({ ok: true, pageId, message: 'Review decision saved' });
     }
 
     return json({ error: 'not found' }, 404);

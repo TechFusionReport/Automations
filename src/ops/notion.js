@@ -29,13 +29,20 @@ function truncate(str, len = DRAFT_PREVIEW_LEN) {
 }
 
 // ── request-body builders ────────────────────────────────────────────────────
-export function queryBody({ status, statuses, sorts, pageSize, cursor } = {}) {
+export function queryBody({ status, statuses, sorts, pageSize, cursor, title, category, source, featured } = {}) {
   const body = {};
+  const filters = [];
   if (Array.isArray(statuses) && statuses.length) {
-    body.filter = { or: statuses.map((name) => ({ property: P.status, status: { equals: name } })) };
+    filters.push({ or: statuses.map((name) => ({ property: P.status, status: { equals: name } })) });
   } else if (status) {
-    body.filter = { property: P.status, status: { equals: status } };
+    filters.push({ property: P.status, status: { equals: status } });
   }
+  if (title) filters.push({ property: P.title, title: { contains: title } });
+  if (category) filters.push({ property: P.category, select: { equals: category } });
+  if (source) filters.push({ property: P.source, multi_select: { contains: source } });
+  if (featured === true || featured === false) filters.push({ property: P.featured, checkbox: { equals: featured } });
+  if (filters.length === 1) body.filter = filters[0];
+  if (filters.length > 1) body.filter = { and: filters };
   if (sorts) body.sorts = sorts;
   if (pageSize) body.page_size = pageSize;
   if (cursor) body.start_cursor = cursor;
@@ -48,6 +55,13 @@ export function statusPatchBody(name) {
 
 export function featuredPatchBody(value) {
   return { [P.featured]: { checkbox: value === true } };
+}
+
+export function richTextPatchBody(name, value) {
+  const text = String(value || '');
+  const rich_text = [];
+  for (let i = 0; i < text.length; i += 2000) rich_text.push({ text: { content: text.slice(i, i + 2000) } });
+  return { [name]: { rich_text } };
 }
 
 // ── view mappers ─────────────────────────────────────────────────────────────
@@ -75,9 +89,26 @@ export function mapDraftItem(page) {
     seoScore: getNumber(page, P.seoScore),
     focusKeyword: plainText(page, P.focusKeyword),
     featured: getCheckbox(page, P.featured),
+    videoUrl: getUrl(page, P.videoUrl),
     draftPreview: truncate(draft),
     wordCount: draft ? draft.split(/\s+/).filter(Boolean).length : 0,
     createdTime: page.created_time ?? null,
+  };
+}
+
+export function mapDraftDetail(page) {
+  const transcript = plainText(page, P.transcript);
+  const blogDraft = plainText(page, P.blogDraft);
+  return {
+    ...mapDraftItem(page),
+    transcript,
+    blogDraft,
+    keyPointComparison: plainText(page, P.keyPointComparison),
+    reviewerNotes: plainText(page, P.reviewerNotes),
+    reviewAuditLog: plainText(page, P.reviewAuditLog),
+    comparisonGeneratedAt: getDate(page, P.comparisonGeneratedAt),
+    transcriptWordCount: transcript ? transcript.split(/\s+/).filter(Boolean).length : 0,
+    wordCount: blogDraft ? blogDraft.split(/\s+/).filter(Boolean).length : 0,
   };
 }
 
@@ -136,6 +167,10 @@ export function notionClient(token, { fetchImpl = fetch } = {}) {
         method: 'POST', headers, body: JSON.stringify(body || {}),
       });
       return readOrThrow(res, 'query');
+    },
+    async retrieve(pageId) {
+      const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, { headers });
+      return readOrThrow(res, 'retrieve');
     },
     async patch(pageId, properties) {
       const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, {

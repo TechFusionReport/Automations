@@ -157,6 +157,10 @@ export class EnhancementPoller {
       tags: props[CATALOG_PROPERTIES.tags]?.multi_select?.map(t => t.name) || [],
       title: props[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || '',
       videoId: props[CATALOG_PROPERTIES.videoId]?.rich_text?.[0]?.text?.content || '',
+      transcript: (props[CATALOG_PROPERTIES.transcript]?.rich_text || [])
+        .map(part => part.plain_text || part.text?.content || '')
+        .join('')
+        .trim(),
       seoDefaults
     });
 

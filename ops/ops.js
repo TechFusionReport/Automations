@@ -87,6 +87,45 @@ export function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+export function youtubeEmbedUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    let id = '';
+    if (host === 'youtu.be') id = url.pathname.split('/').filter(Boolean)[0] || '';
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      id = url.searchParams.get('v') || '';
+      if (!id) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        if (['embed', 'shorts', 'live'].includes(parts[0])) id = parts[1] || '';
+      }
+    }
+    return /^[A-Za-z0-9_-]{6,20}$/.test(id) ? `https://www.youtube-nocookie.com/embed/${id}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function videoEmbed(url) {
+  let embed = youtubeEmbedUrl(url);
+  try {
+    const u = new URL(url);
+    if (!embed && /(^|\.)vimeo\.com$/i.test(u.hostname)) {
+      const id = u.pathname.split('/').filter(Boolean).find(x => /^\d+$/.test(x));
+      if (id) embed = `https://player.vimeo.com/video/${id}`;
+    }
+    if (!embed && /\.(mp4|webm|ogg)$/i.test(u.pathname)) {
+      return `<video class="video-direct" controls preload="metadata" src="${escapeHtml(url)}"></video>`;
+    }
+  } catch { /* fallback below */ }
+  if (!embed) return url
+    ? `<div class="video-fallback"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
+    : '<div class="state empty">No original video URL available.</div>';
+  return `<div class="video-frame"><iframe src="${embed}" title="Original source video" loading="lazy"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Everything below runs only in the browser.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -94,7 +133,21 @@ if (typeof document !== 'undefined') {
   const API = '/ops/api';
   const NOTION_DB = 'https://www.notion.so/1fbbd080de92804389aadc02853c15c7';
 
-  const state = { overview: null, queue: [], drafts: [], selectedQueue: null, selectedDraft: null };
+  const state = {
+    overview: null,
+    queue: [],
+    drafts: [],
+    draftDetails: {},
+    draftDetailLoading: null,
+    draftsCursor: null,
+    draftsHasMore: false,
+    draftsLoading: false,
+    selectedQueue: null,
+    selectedDraft: null,
+    selectedDraftIds: new Set(),
+    draftQuery: { q: '', sort: 'oldest', featured: '' },
+    dirtyDraft: false,
+  };
   const $ = (sel, root = document) => root.querySelector(sel);
   const view = (name) => $(`#view-${name}`);
 
@@ -259,6 +312,7 @@ if (typeof document !== 'undefined') {
     if (!it) { $('.detail-pane', root).innerHTML = ''; return; }
     $('.detail-pane', root).innerHTML = `
       <h2>${escapeHtml(it.title || 'Untitled')}</h2>
+      ${videoEmbed(it.videoUrl)}
       <dl class="meta">
         <dt>Source</dt><dd>${escapeHtml((it.source || []).join(', ') || '—')}</dd>
         <dt>Category</dt><dd>${escapeHtml(it.category || '—')} / ${escapeHtml(it.subcategory || '—')}</dd>
@@ -275,50 +329,103 @@ if (typeof document !== 'undefined') {
   }
 
   // ── draft review (Gate 2) ──────────────────────────────────────────────────
+  function draftParams(cursor = '') {
+    const p = new URLSearchParams();
+    Object.entries(state.draftQuery).forEach(([k, v]) => { if (v !== '') p.set(k, v); });
+    if (cursor) p.set('cursor', cursor);
+    return p.toString() ? `?${p}` : '';
+  }
+
   async function loadDrafts() {
     const root = view('drafts');
+    state.draftDetails = {};
+    state.draftDetailLoading = null;
+    state.dirtyDraft = false;
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading drafts…')}</div><div class="detail-pane"></div></div>`;
     try {
-      const data = await api('/drafts');
+      const data = await api('/drafts' + draftParams());
       state.drafts = data.items;
+      state.draftsCursor = data.nextCursor || null;
+      state.draftsHasMore = data.hasMore === true;
+      state.draftsLoading = false;
+      state.selectedDraft = state.drafts.length ? 0 : null;
       renderDrafts();
-    } catch (e) {
-      $('.list-pane', root).innerHTML = errorState(e.message);
-    }
+    } catch (e) { $('.list-pane', root).innerHTML = errorState(e.message); }
+  }
+
+  function riskSummary(text = '') {
+    const estimate = text.match(/(\d{1,3})\s*%/)?.[1];
+    const unsupported = (text.match(/POSSIBLY UNSUPPORTED[\s\S]*?(?=CHANGED DETAILS|COVERAGE ESTIMATE|$)/i)?.[0].match(/^-/gm) || []).length;
+    const changed = (text.match(/CHANGED DETAILS[\s\S]*?(?=COVERAGE ESTIMATE|$)/i)?.[0].match(/^-/gm) || []).length;
+    const level = unsupported + changed > 4 ? 'high' : unsupported + changed ? 'medium' : 'low';
+    return `<div class="risk ${level}"><strong>${level.toUpperCase()} RISK</strong> · Coverage ${estimate ? estimate + '%' : 'not scored'} · ${unsupported} unsupported · ${changed} changed</div>`;
   }
 
   function renderDrafts() {
-    const root = view('drafts');
-    const listPane = $('.list-pane', root);
-    if (!state.drafts.length) { listPane.innerHTML = empty('No drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
-    listPane.innerHTML = state.drafts.map((it, i) => `
+    const root = view('drafts'), listPane = $('.list-pane', root);
+    const tools = `<div class="review-tools">
+      <input id="draft-search" type="search" value="${escapeHtml(state.draftQuery.q)}" placeholder="Search title">
+      <select id="draft-sort"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="seoHigh">SEO high–low</option><option value="seoLow">SEO low–high</option></select>
+      <select id="draft-featured"><option value="">All</option><option value="true">Featured</option><option value="false">Not featured</option></select>
+      <button class="btn ghost" data-filter-drafts>Apply</button>
+    </div>`;
+    if (!state.drafts.length) { listPane.innerHTML = tools + empty('No matching drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
+    const rows = state.drafts.map((it, i) => `<div class="row-wrap">
+      <input type="checkbox" data-select-draft="${escapeHtml(it.id)}" ${state.selectedDraftIds.has(it.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(it.title)}">
       <button class="row ${i === state.selectedDraft ? 'sel' : ''}" data-i="${i}">
         <span class="row-title">${escapeHtml(it.title || 'Untitled')}${it.featured ? ' ⭐' : ''}</span>
         <span class="row-sub muted mono">${it.wordCount}w · SEO ${it.seoScore ?? '—'}</span>
-      </button>`).join('');
-    if (state.selectedDraft == null) state.selectedDraft = 0;
+      </button></div>`).join('');
+    const total = state.overview?.kpis?.gate2Backlog;
+    const progress = total == null ? `${state.drafts.length} loaded` : `${state.drafts.length} of ${total} total loaded`;
+    const more = state.draftsHasMore ? `<button class="btn ghost" data-load-more="drafts">Load 50 More</button>` : '';
+    listPane.innerHTML = tools + rows + `<div class="actions bulk"><select id="bulk-action"><option value="feature">Feature</option><option value="unfeature">Unfeature</option><option value="revision">Return for revision</option><option value="reject">Reject</option></select><button class="btn ghost" data-bulk-apply>Apply to selected</button>${more}<span class="muted mono">${progress}</span></div>`;
+    $('#draft-sort').value = state.draftQuery.sort;
+    $('#draft-featured').value = state.draftQuery.featured;
     renderDraftDetail();
   }
 
+  async function loadMoreDrafts() {
+    if (state.draftsLoading || !state.draftsHasMore || !state.draftsCursor) return;
+    state.draftsLoading = true;
+    try {
+      const data = await api('/drafts' + draftParams(state.draftsCursor));
+      const seen = new Set(state.drafts.map(x => x.id));
+      state.drafts.push(...data.items.filter(x => !seen.has(x.id)));
+      state.draftsCursor = data.nextCursor || null; state.draftsHasMore = data.hasMore === true;
+    } catch (e) { alert(e.message); } finally { state.draftsLoading = false; renderDrafts(); }
+  }
+
+  async function loadDraftDetail(pageId) {
+    if (!pageId || state.draftDetails[pageId] || state.draftDetailLoading === pageId) return;
+    state.draftDetailLoading = pageId; renderDraftDetail();
+    try { state.draftDetails[pageId] = await api(`/drafts/${encodeURIComponent(pageId)}`); }
+    catch (e) { state.draftDetails[pageId] = { error: e.message }; }
+    finally { state.draftDetailLoading = null; renderDraftDetail(); }
+  }
+
   function renderDraftDetail() {
-    const root = view('drafts');
-    const it = state.drafts[state.selectedDraft];
-    if (!it) { $('.detail-pane', root).innerHTML = ''; return; }
-    $('.detail-pane', root).innerHTML = `
-      <h2>${escapeHtml(it.title || 'Untitled')}${it.featured ? ' <span class="star">⭐</span>' : ''}</h2>
-      <dl class="meta">
-        <dt>SEO Title</dt><dd>${escapeHtml(it.seoTitle || '—')}</dd>
-        <dt>SEO Score</dt><dd class="mono">${it.seoScore ?? '—'}</dd>
-        <dt>Focus KW</dt><dd>${escapeHtml(it.focusKeyword || '—')}</dd>
-        <dt>Length</dt><dd class="mono">${it.wordCount} words</dd>
-      </dl>
-      <div class="draft-preview">${escapeHtml(it.draftPreview || 'No draft content.')}</div>
-      <div class="actions">
-        <a class="btn ghost" href="${escapeHtml(it.notionUrl)}" target="_blank" rel="noopener">Edit Draft ↗</a>
-        <button class="btn ${it.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${escapeHtml(it.id)}" data-val="${it.featured ? 'false' : 'true'}">${it.featured ? 'Unfeature' : 'Mark Featured'}</button>
-        <button class="btn green" data-act="approve-publish" data-id="${escapeHtml(it.id)}">Approve for Publishing</button>
-      </div>
-      <div class="act-msg"></div>`;
+    const root = view('drafts'), summary = state.drafts[state.selectedDraft], pane = $('.detail-pane', root);
+    if (!summary || !pane) { if (pane) pane.innerHTML = ''; return; }
+    const detail = state.draftDetails[summary.id];
+    if (!detail) { pane.innerHTML = `<h2>${escapeHtml(summary.title)}</h2>${loading('Loading review workspace…')}`; loadDraftDetail(summary.id); return; }
+    if (detail.error) { pane.innerHTML = errorState(detail.error); return; }
+    pane.innerHTML = `
+      <h2>${escapeHtml(detail.title || 'Untitled')}${detail.featured ? ' ⭐' : ''}</h2>
+      ${videoEmbed(detail.videoUrl)}
+      <dl class="meta"><dt>SEO Title</dt><dd>${escapeHtml(detail.seoTitle || '—')}</dd><dt>SEO Score</dt><dd>${detail.seoScore ?? '—'}</dd><dt>Focus KW</dt><dd>${escapeHtml(detail.focusKeyword || '—')}</dd><dt>Transcript</dt><dd>${detail.transcriptWordCount} words</dd><dt>Draft</dt><dd>${detail.wordCount} words</dd></dl>
+      ${riskSummary(detail.keyPointComparison)}
+      <section class="review-section comparison-panel"><div class="section-head"><h3>Key-Point Comparison</h3><button class="btn ghost" data-act="generate-comparison" data-id="${detail.id}">${detail.keyPointComparison ? 'Regenerate' : 'Generate'} Comparison</button></div><div class="review-copy">${escapeHtml(detail.keyPointComparison || 'Generate a transcript-grounded comparison for this draft.')}</div></section>
+      <div class="compare-grid"><section class="review-section"><h3>Original Transcript</h3><div class="review-copy">${escapeHtml(detail.transcript || 'Unavailable')}</div></section>
+      <section class="review-section"><div class="section-head"><h3>Editable Blog Draft</h3><span id="draft-count" class="mono muted">${detail.wordCount} words</span></div><textarea id="draft-editor" class="draft-editor">${escapeHtml(detail.blogDraft || '')}</textarea><details><summary>Rendered HTML preview</summary><iframe id="draft-preview" class="draft-preview" sandbox srcdoc="${escapeHtml(detail.blogDraft || '')}"></iframe></details></section></div>
+      <label class="review-notes">Reviewer notes<textarea id="reviewer-notes">${escapeHtml(detail.reviewerNotes || '')}</textarea></label>
+      <details class="audit"><summary>Review audit history</summary><pre>${escapeHtml(detail.reviewAuditLog || 'No dashboard actions recorded yet.')}</pre></details>
+      <div class="actions"><a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Open in Notion ↗</a>
+      <button class="btn purple" data-act="save-draft" data-id="${detail.id}">Save Draft</button>
+      <button class="btn amber" data-act="return-revision" data-id="${detail.id}">Return for Revision</button>
+      <button class="btn red" data-act="reject" data-id="${detail.id}">Reject</button>
+      <button class="btn ${detail.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${detail.id}" data-val="${!detail.featured}">${detail.featured ? 'Unfeature' : 'Feature'}</button>
+      <button class="btn green" data-act="approve-publish" data-id="${detail.id}">Approve Publishing</button></div><div class="act-msg"></div>`;
   }
 
   // ── board ──────────────────────────────────────────────────────────────────
@@ -358,46 +465,88 @@ if (typeof document !== 'undefined') {
   }
 
   // ── action handling (event delegation) ─────────────────────────────────────
-  async function runAction(btn) {
-    const act = btn.dataset.act;
-    const pageId = btn.dataset.id;
-    const msg = btn.closest('.detail-pane')?.querySelector('.act-msg');
-    const body = { pageId };
-    if (act === 'toggle-featured') body.value = btn.dataset.val === 'true';
-    btn.disabled = true;
-    if (msg) msg.innerHTML = loading('Working…');
-    try {
-      await api(`/actions/${act}`, { method: 'POST', body: JSON.stringify(body) });
-      // Refresh the relevant list + badges.
-      const o = await api('/overview'); state.overview = o; setBadges();
-      if (act === 'toggle-featured') {
-        await loadDrafts();
-      } else if (view('queue').classList.contains('active')) {
-        state.selectedQueue = null; await loadQueue();
-      } else {
-        state.selectedDraft = null; await loadDrafts();
-      }
-    } catch (e) {
-      btn.disabled = false;
-      if (msg) msg.innerHTML = errorState(e.message);
-    }
+  function toast(message, bad = false) {
+    let el = $('#ops-toast');
+    if (!el) { el = document.createElement('div'); el.id = 'ops-toast'; document.body.appendChild(el); }
+    el.className = `toast ${bad ? 'bad' : 'ok'}`; el.textContent = message; el.hidden = false;
+    clearTimeout(el._timer); el._timer = setTimeout(() => { el.hidden = true; }, 5000);
   }
 
-  // ── init ───────────────────────────────────────────────────────────────────
+  async function runAction(btn) {
+    const act = btn.dataset.act, pageId = btn.dataset.id;
+    const destructive = ['reject', 'return-revision', 'approve-publish', 'generate-comparison'];
+    if (destructive.includes(act) && !confirm(`${act.replaceAll('-', ' ')} for this record?`)) return;
+    const body = { pageId };
+    const editor = $('#draft-editor'), notes = $('#reviewer-notes');
+    if (act === 'toggle-featured') body.value = btn.dataset.val === 'true';
+    if (['save-draft', 'return-revision', 'reject', 'approve-publish'].includes(act)) {
+      body.blogDraft = editor?.value; body.reviewerNotes = notes?.value;
+      if (act === 'return-revision' || act === 'reject') body.note = prompt('Reason / requested change (required):') || '';
+      if ((act === 'return-revision' || act === 'reject') && !body.note) return;
+    }
+    btn.disabled = true;
+    try {
+      const result = await api(`/actions/${act}`, { method: 'POST', body: JSON.stringify(body) });
+      state.dirtyDraft = false; toast(result.message || 'Saved successfully');
+      if (act === 'generate-comparison') {
+        const d = state.draftDetails[pageId]; d.keyPointComparison = result.comparison; d.comparisonGeneratedAt = result.generatedAt; renderDraftDetail();
+      } else if (act === 'save-draft') {
+        const d = state.draftDetails[pageId]; d.blogDraft = body.blogDraft; d.reviewerNotes = body.reviewerNotes; renderDraftDetail();
+      } else {
+        const o = await api('/overview'); state.overview = o; setBadges();
+        if (view('queue').classList.contains('active')) { state.selectedQueue = null; await loadQueue(); }
+        else await loadDrafts();
+      }
+    } catch (e) { btn.disabled = false; toast(e.message, true); }
+  }
+
+  async function runBulk() {
+    const ids = [...state.selectedDraftIds], action = $('#bulk-action')?.value;
+    if (!ids.length) return toast('Select at least one draft', true);
+    if (!confirm(`${action} ${ids.length} selected records? Bulk publishing is never permitted.`)) return;
+    const note = ['reject', 'revision'].includes(action) ? (prompt('Reason / requested change (required):') || '') : '';
+    if (['reject', 'revision'].includes(action) && !note) return;
+    try {
+      const r = await api('/actions/bulk', { method: 'POST', body: JSON.stringify({ pageIds: ids, action, note }) });
+      state.selectedDraftIds.clear(); toast(r.message); await loadDrafts();
+    } catch (e) { toast(e.message, true); }
+  }
+
   function init() {
+    document.body.addEventListener('input', (ev) => {
+      if (ev.target.id === 'draft-editor') {
+        state.dirtyDraft = true;
+        const words = ev.target.value.trim().split(/\s+/).filter(Boolean).length;
+        if ($('#draft-count')) $('#draft-count').textContent = `${words} words · unsaved`;
+        if ($('#draft-preview')) $('#draft-preview').srcdoc = ev.target.value;
+      }
+      if (ev.target.id === 'reviewer-notes') state.dirtyDraft = true;
+    });
+    document.body.addEventListener('change', (ev) => {
+      const cb = ev.target.closest('[data-select-draft]');
+      if (cb) { cb.checked ? state.selectedDraftIds.add(cb.dataset.selectDraft) : state.selectedDraftIds.delete(cb.dataset.selectDraft); }
+    });
     document.body.addEventListener('click', (ev) => {
       const nav = ev.target.closest('[data-view]');
-      if (nav) { ev.preventDefault(); switchView(nav.dataset.view); return; }
+      if (nav) { ev.preventDefault(); if (state.dirtyDraft && !confirm('Discard unsaved draft changes?')) return; switchView(nav.dataset.view); return; }
+      if (ev.target.closest('[data-filter-drafts]')) {
+        state.draftQuery = { q: $('#draft-search').value.trim(), sort: $('#draft-sort').value, featured: $('#draft-featured').value }; loadDrafts(); return;
+      }
+      if (ev.target.closest('[data-bulk-apply]')) { runBulk(); return; }
+      const more = ev.target.closest('[data-load-more="drafts"]');
+      if (more) { loadMoreDrafts(); return; }
       const row = ev.target.closest('.row');
       if (row) {
+        if (state.dirtyDraft && !confirm('Discard unsaved draft changes?')) return;
         const i = Number(row.dataset.i);
         if (view('queue').classList.contains('active')) { state.selectedQueue = i; renderQueue(); }
-        else { state.selectedDraft = i; renderDrafts(); }
+        else { state.selectedDraft = i; state.dirtyDraft = false; renderDrafts(); }
         return;
       }
       const actBtn = ev.target.closest('[data-act]');
       if (actBtn) { ev.preventDefault(); runAction(actBtn); }
     });
+    window.addEventListener('beforeunload', (ev) => { if (state.dirtyDraft) { ev.preventDefault(); ev.returnValue = ''; } });
     switchView('dashboard');
   }
 
