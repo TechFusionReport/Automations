@@ -12,6 +12,7 @@ import {
 } from './notion.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
 import { EnhancementOrchestrator } from '../agents/enhancement.js';
+import { buildCommandCenter } from './command-center.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -259,6 +260,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
       }
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
+        case '/command-center': return json(await (deps.commandCenter || buildCommandCenter)(env, secrets, { now }));
         case '/queue': return json(await listQueue(client, dbId));
         case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor'), {
           title: url.searchParams.get('q') || '',
