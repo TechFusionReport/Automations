@@ -12,30 +12,42 @@ const select = (property) => property?.select?.name ?? property?.status?.name ??
 async function responseJson(response, label) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${label} returned ${response.status}`);
+  if (body.success === false) {
+    const message = body.errors?.map((error) => error.message).filter(Boolean).join('; ');
+    throw new Error(`${label} failed${message ? `: ${message}` : ''}`);
+  }
   return body;
 }
 
 async function readTasks(fetchFn, token, databaseId = TASK_DATABASE_ID) {
-  if (!token) return { status: 'unavailable', reason: 'notion credential missing', items: [] };
-  const body = {
-    page_size: 50,
-    filter: { and: [
-      { property: 'Scope', select: { equals: 'Professional' } },
-      { property: 'Status', select: { does_not_equal: 'Done' } },
-      { property: 'Status', select: { does_not_equal: 'Abandoned' } },
-    ] },
-  };
-  const response = await fetchFn(`https://api.notion.com/v1/databases/${databaseId}/query`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Notion-Version': '2022-06-28',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await responseJson(response, 'Task Tracker');
-  const items = (data.results || []).map((page) => ({
+  if (!token) return { status: 'unavailable', reason: 'notion credential missing', items: [], attention: [] };
+  const results = [];
+  let cursor;
+  do {
+    const body = {
+      page_size: 100,
+      filter: { and: [
+        { property: 'Scope', select: { equals: 'Professional' } },
+        { property: 'Status', select: { does_not_equal: 'Done' } },
+        { property: 'Status', select: { does_not_equal: 'Abandoned' } },
+      ] },
+    };
+    if (cursor) body.start_cursor = cursor;
+    const response = await fetchFn(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await responseJson(response, 'Task Tracker');
+    results.push(...(data.results || []));
+    cursor = data.has_more ? data.next_cursor : null;
+  } while (cursor);
+
+  const allItems = results.map((page) => ({
     id: page.id,
     title: text(page.properties?.Task?.title),
     status: select(page.properties?.Status),
@@ -49,12 +61,13 @@ async function readTasks(fetchFn, token, databaseId = TASK_DATABASE_ID) {
   return {
     status: 'ok',
     counts: {
-      critical: items.filter((item) => item.priority === '🔴 Critical').length,
-      inProgress: items.filter((item) => item.status === 'In Progress').length,
-      blocked: items.filter((item) => item.status === 'Blocked').length,
-      open: items.length,
+      critical: allItems.filter((item) => item.priority === '🔴 Critical').length,
+      inProgress: allItems.filter((item) => item.status === 'In Progress').length,
+      blocked: allItems.filter((item) => item.status === 'Blocked').length,
+      open: allItems.length,
     },
-    items: items.slice(0, 12),
+    items: allItems.slice(0, 12),
+    attention: allItems.filter((item) => item.priority === '🔴 Critical' || item.status === 'Blocked'),
     authoritativeUrl: `https://www.notion.so/${databaseId.replace(/-/g, '')}`,
   };
 }
@@ -145,8 +158,7 @@ export async function buildCommandCenter(env, secrets = {}, deps = {}) {
   ]);
 
   const attention = [
-    ...(tasks.items || []).filter((item) => item.priority === '🔴 Critical' || item.status === 'Blocked')
-      .map((item) => ({ source: 'notion', type: 'task', title: item.title, url: item.url })),
+    ...(tasks.attention || []).map((item) => ({ source: 'notion', type: 'task', title: item.title, url: item.url })),
     ...(pullRequests.items || []).filter((item) => item.draft)
       .map((item) => ({ source: 'github', type: 'draft-pr', title: `${item.repository} #${item.number}: ${item.title}`, url: item.url })),
     ...services.filter((item) => item.status !== 'ok')
