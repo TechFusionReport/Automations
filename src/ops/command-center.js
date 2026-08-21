@@ -151,7 +151,7 @@ export async function buildCommandCenter(env, secrets = {}, deps = {}) {
     settled(() => readPullRequests(fetchFn, githubToken), { status: 'error', items: [] }),
     settled(() => readCloudflare(fetchFn, cloudflareToken, cloudflareAccountId), { status: 'error' }),
     Promise.all([
-      probe(fetchFn, 'TechFusion API', 'https://techfusion-api.quiet-shadow-2fce.workers.dev/health'),
+      probe(fetchFn, 'TechFusion API', 'https://api.techfusionreport.com/health'),
       probe(fetchFn, 'Website', 'https://techfusionreport.com/'),
       probe(fetchFn, 'OmniRoute', 'https://omniroute.techfusionreport.com/v1/models'),
     ]),
