@@ -52,3 +52,52 @@ ACCESS_AUD = "237b90bc3ae13f3d86ea609fc2c902b2801e130eb338f105a6b66bb3e90ba032"
 
 [triggers]
 crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *", "*/30 * * * *"]
+
+[env.preview]
+name = "techfusion-api-preview"
+
+[[env.preview.kv_namespaces]]
+binding = "CONTENT_KV"
+id = "babedd1995654cee9ce79b26441ab028"
+
+[[env.preview.kv_namespaces]]
+binding = "AGENT_STATE"
+id = "fd2abc6f596b4ba0a7f018f747ddfa11"
+
+[[env.preview.kv_namespaces]]
+binding = "ANALYTICS"
+id = "32cc7a8989334c7d9041ac2843bc903e"
+
+[[env.preview.queues.producers]]
+queue = "enhancement-queue-preview"
+binding = "ENHANCEMENT_QUEUE"
+
+[[env.preview.queues.consumers]]
+queue = "enhancement-queue-preview"
+max_batch_size = 1
+max_batch_timeout = 30
+
+[[env.preview.queues.producers]]
+queue = "publishing-queue-preview"
+binding = "PUBLISHING_QUEUE"
+
+[[env.preview.queues.consumers]]
+queue = "publishing-queue-preview"
+max_batch_size = 1
+max_batch_timeout = 30
+
+[env.preview.vars]
+NOTION_DATABASE_ID = "3c9bd080de9280989eb3e87cf9a47da1"
+OMNIROUTE_ENABLED = "true"
+OMNIROUTE_BASE_URL = "https://omniroute.techfusionreport.com"
+OMNIROUTE_CHAIN = "TFR Free Chain"
+OMNIROUTE_TIMEOUT_MS = "30000"
+OMNIROUTE_FALLBACK_ENABLED = "true"
+ACCESS_TEAM_DOMAIN = "jsmithhomelab"
+ACCESS_AUD = "237b90bc3ae13f3d86ea609fc2c902b2801e130eb338f105a6b66bb3e90ba032"
+WEBSITE_REPO_OWNER = "TechFusionReport"
+WEBSITE_REPO_NAME = "Website-preview"
+WEBSITE_REPO_BRANCH = "main"
+
+[env.preview.triggers]
+crons = []
