@@ -153,7 +153,10 @@ export class PublishingAgent {
 
   async updatePostsJson(metadata, githubUrl, secrets) {
     const pat = secrets.github_pat;
-    const apiBase = 'https://api.github.com/repos/TechFusionReport/Website/contents/posts.json';
+    const owner = this.env.WEBSITE_REPO_OWNER || 'TechFusionReport';
+    const repo = this.env.WEBSITE_REPO_NAME || 'Website';
+    const branch = this.env.WEBSITE_REPO_BRANCH || 'main';
+    const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents/posts.json`;
     const headers = {
       'Authorization': `token ${pat}`,
       'Accept': 'application/vnd.github.v3+json',
@@ -161,7 +164,7 @@ export class PublishingAgent {
       'User-Agent': 'TechFusionReport-Bot/1.0'
     };
 
-    const existing = await fetch(apiBase, { headers });
+    const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(branch)}`, { headers });
     let posts = [];
     let sha;
     if (existing.ok) {
@@ -191,6 +194,7 @@ export class PublishingAgent {
       body: JSON.stringify({
         message: `Update posts.json: add ${metadata.title}`,
         content: encoded,
+        branch,
         ...(sha ? { sha } : {}),
         committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
       })
@@ -202,8 +206,11 @@ export class PublishingAgent {
   async commitToGitHub(path, html, metadata, secrets) {
     const pat = secrets.github_pat;
     if (!pat) throw new Error('github_pat missing from secrets');
+    const owner = this.env.WEBSITE_REPO_OWNER || 'TechFusionReport';
+    const repo = this.env.WEBSITE_REPO_NAME || 'Website';
+    const branch = this.env.WEBSITE_REPO_BRANCH || 'main';
     const base64Content = btoa(unescape(encodeURIComponent(html)));
-    const apiBase = `https://api.github.com/repos/TechFusionReport/Website/contents/${path}`;
+    const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     const headers = {
       'Authorization': `token ${pat}`,
       'Accept': 'application/vnd.github.v3+json',
@@ -211,7 +218,7 @@ export class PublishingAgent {
       'User-Agent': 'TechFusionReport-Bot/1.0'
     };
 
-    const checkRes = await fetch(apiBase, { headers });
+    const checkRes = await fetch(`${apiBase}?ref=${encodeURIComponent(branch)}`, { headers });
     const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
 
     const commitRes = await fetch(apiBase, {
@@ -220,6 +227,7 @@ export class PublishingAgent {
       body: JSON.stringify({
         message: `Add: ${metadata.title} [${metadata.category}]`,
         content: base64Content,
+        branch,
         ...(sha ? { sha } : {}),
         committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
       })
@@ -458,7 +466,7 @@ export class PublishingAgent {
   }
 
   async generateHeadlineVariants(title) {
-    return [{ headline: title }, { headline: title + ' — Full Guide' }];
+    return [{ headline: title }, { headline: title + ' - Full Guide' }];
   }
 
   async generateSocialContent(metadata, content) {
@@ -485,13 +493,13 @@ Format clearly.`;
       });
 
       return {
-        twitter: this.extractSection(text, 'Twitter') || `🚀 ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
+        twitter: this.extractSection(text, 'Twitter') || `New post: ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
         linkedin: this.extractSection(text, 'LinkedIn') || `Just published: ${metadata.title}`,
         devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
       };
     } catch {
       return {
-        twitter: `🚀 New post: ${metadata.title}\n\nCheck it out! #${metadata.category.replace(/\s+/g, '')}`,
+        twitter: `New post: ${metadata.title}\n\nCheck it out! #${metadata.category.replace(/\s+/g, '')}`,
         linkedin: `Just published: ${metadata.title} in our ${metadata.category} section.`,
         devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
       };
