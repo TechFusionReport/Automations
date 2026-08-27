@@ -57,7 +57,7 @@ export class LlmClient {
   constructor(env, secrets = {}, { fetchImpl = fetch, logger = console } = {}) {
     this.env = env || {};
     this.secrets = secrets || {};
-    this.fetch = fetchImpl;
+    this.fetch = (...args) => fetchImpl(...args);
     this.logger = logger;
     this.config = resolveLlmConfig(this.env, this.secrets);
   }
