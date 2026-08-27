@@ -466,7 +466,7 @@ export class PublishingAgent {
   }
 
   async generateHeadlineVariants(title) {
-    return [{ headline: title }, { headline: title + ' - Full Guide' }];
+    return [{ headline: title }, { headline: title + ' — Full Guide' }];
   }
 
   async generateSocialContent(metadata, content) {
@@ -493,13 +493,13 @@ Format clearly.`;
       });
 
       return {
-        twitter: this.extractSection(text, 'Twitter') || `New post: ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
+        twitter: this.extractSection(text, 'Twitter') || `🚀 ${metadata.title}\n\n#${metadata.category.replace(/\s+/g, '')}`,
         linkedin: this.extractSection(text, 'LinkedIn') || `Just published: ${metadata.title}`,
         devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
       };
     } catch {
       return {
-        twitter: `New post: ${metadata.title}\n\nCheck it out! #${metadata.category.replace(/\s+/g, '')}`,
+        twitter: `🚀 New post: ${metadata.title}\n\nCheck it out! #${metadata.category.replace(/\s+/g, '')}`,
         linkedin: `Just published: ${metadata.title} in our ${metadata.category} section.`,
         devto: { title: metadata.title, tags: metadata.tags.slice(0, 4) }
       };
