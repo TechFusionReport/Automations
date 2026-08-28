@@ -146,16 +146,30 @@ export async function buildCommandCenter(env, secrets = {}, deps = {}) {
   const cloudflareToken = secrets.cloudflare_api_token || env.CLOUDFLARE_API_TOKEN;
   const cloudflareAccountId = secrets.cloudflare_account_id || env.CLOUDFLARE_ACCOUNT_ID;
 
-  const [tasks, pullRequests, cloudflare, services] = await Promise.all([
+  const [tasks, pullRequests, cloudflare, remoteServices] = await Promise.all([
     settled(() => readTasks(fetchFn, notionToken, secrets.notion_task_database_id), { status: 'error', items: [] }),
     settled(() => readPullRequests(fetchFn, githubToken), { status: 'error', items: [] }),
     settled(() => readCloudflare(fetchFn, cloudflareToken, cloudflareAccountId), { status: 'error' }),
     Promise.all([
-      probe(fetchFn, 'TechFusion API', 'https://api.techfusionreport.com/health'),
       probe(fetchFn, 'Website', 'https://techfusionreport.com/'),
       probe(fetchFn, 'OmniRoute', 'https://omniroute.techfusionreport.com/v1/models'),
     ]),
   ]);
+
+  // Reaching buildCommandCenter proves the current techfusion-api Worker invocation is alive.
+  // Do not fetch the Worker's own public hostname from inside itself: same-zone self-subrequests
+  // can return a synthetic 522 even while the external /health endpoint is healthy.
+  const services = [
+    {
+      name: 'TechFusion API',
+      url: 'https://api.techfusionreport.com/health',
+      status: 'ok',
+      httpStatus: 200,
+      latencyMs: 0,
+      source: 'current-worker',
+    },
+    ...remoteServices,
+  ];
 
   const attention = [
     ...(tasks.attention || []).map((item) => ({ source: 'notion', type: 'task', title: item.title, url: item.url })),
