@@ -50,6 +50,11 @@ OMNIROUTE_FALLBACK_ENABLED = "true"
 ACCESS_TEAM_DOMAIN = "jsmithhomelab"
 ACCESS_AUD = "237b90bc3ae13f3d86ea609fc2c902b2801e130eb338f105a6b66bb3e90ba032,dfbf54825648f104f1c839aa378135847131ef08892d74ecd69a51eb9d564c12"
 CLOUDFLARE_ACCOUNT_ID = "f1310d4330378e55242e878cf33d0a29"
+# Access-protected Prometheus and Grafana endpoints. Service-token credentials
+# live in CONTENT_KV["secrets"]; never commit them here.
+PROMETHEUS_BASE_URL = "https://prometheus.techfusionreport.com"
+PROMETHEUS_TIMEOUT_MS = "5000"
+GRAFANA_BASE_URL = "https://grafana.techfusionreport.com"
 
 [triggers]
 crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *", "*/30 * * * *"]
