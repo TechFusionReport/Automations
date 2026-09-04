@@ -20,7 +20,7 @@ If the OmniRoute request fails:
 shared LLM client -> direct Gemini compatibility fallback
 ```
 
-The application does not retry OmniRoute. This avoids multiplying retries already owned by the chain. A single failed OmniRoute request can activate one legacy direct-provider attempt when fallback is enabled. Existing workflow/queue retry behavior remains unchanged.
+The application does not retry OmniRoute. This avoids multiplying retries already owned by the chain. A failed OmniRoute request can activate one legacy direct-provider attempt when fallback is enabled, except authentication and authorization failures (`401`/`403`), which fail closed so broken credentials cannot remain hidden. Existing workflow/queue retry behavior remains unchanged.
 
 ## Verified live API contract
 
@@ -36,7 +36,7 @@ Contract checked against `https://omniroute.techfusionreport.com` on 2026-08-13 
 - Streaming response: `text/event-stream` with `chat.completion.chunk` events, followed by `data: [DONE]`
 - Provider attribution: the live response reliably exposed `x-omniroute-provider` and `x-omniroute-model`, plus `x-omniroute-decision`. The client records only the two explicit attribution headers. It does not guess when either is absent.
 - Request identity: `x-omniroute-request-id` is preferred, with `x-request-id` as a request-ID fallback.
-- Errors: HTTP `401/403`, `429`, other `4xx`, and `5xx` are normalized as authentication, rate-limit, request, and unavailable categories. Network errors, malformed success bodies, and client timeouts have separate categories.
+- Errors: HTTP `401/403`, `429`, other `4xx`, and `5xx` are normalized as authentication, rate-limit, request, and unavailable categories. Network errors, malformed success bodies, and client timeouts have separate categories. Authentication errors never invoke the direct Gemini fallback.
 - Retry semantics: OmniRoute exposes combo/provider retry and failover controls. The application deliberately performs zero OmniRoute retries.
 - Timeouts: the application aborts its request after its configured timeout. Provider timeout/retry behavior remains an OmniRoute concern.
 
@@ -55,6 +55,16 @@ Non-secret defaults live in `wrangler.toml`:
 | `OMNIROUTE_FALLBACK_ENABLED` | `true` | Allow one direct Gemini outage fallback |
 
 If OmniRoute authentication is enabled, add `omniroute_api_key` to the JSON object stored at the existing `CONTENT_KV` key `secrets`. Do not commit it. The existing `gemini_api_key` must remain during migration because it powers the outage fallback.
+
+Authentication rollout order is mandatory to avoid a hard LLM outage:
+
+1. Create the OmniRoute API credential without enabling global enforcement.
+2. Store it as `omniroute_api_key` in the Worker's existing `CONTENT_KV["secrets"]` JSON object.
+3. Manually verify one authenticated request from the deployed shared client succeeds through `TFR Free Chain`.
+4. Only after that succeeds, enable OmniRoute API-key enforcement.
+5. Verify unauthenticated chat requests are rejected and authenticated agent traffic remains healthy.
+
+Do not activate enforcement and fail-closed client behavior simultaneously without validating the deployed credential first. If validation fails, leave enforcement disabled, correct the credential/configuration, and repeat the authenticated check. Never print the credential in commands, logs, screenshots, or documentation.
 
 The same keys can be placed in the KV secret object in lowercase (`omniroute_base_url`, `omniroute_chain`, `omniroute_timeout_ms`, `omniroute_enabled`, and `omniroute_fallback_enabled`), but Worker environment variables take precedence. Central configuration applies to every agent; there are no per-agent OmniRoute endpoints or chain IDs.
 
@@ -80,4 +90,4 @@ Prompts, response content, credentials, and full upstream error bodies are not l
 4. For `authentication`, add/rotate `omniroute_api_key` in the existing KV secret object.
 5. For repeated `timeout` or `unavailable` events, inspect OmniRoute health and provider cooldowns before increasing the Worker timeout.
 
-Immediate rollback does not require a code revert: set `OMNIROUTE_ENABLED` to `false`. All migrated calls then use their legacy Gemini models directly. Keep `OMNIROUTE_FALLBACK_ENABLED=true` during normal operation to prevent the gateway from becoming a single point of failure.
+Immediate routing rollback does not require a code revert: set `OMNIROUTE_ENABLED` to `false`. All migrated calls then use their legacy Gemini models directly. Keep `OMNIROUTE_FALLBACK_ENABLED=true` during normal operation to prevent the gateway from becoming a single point of failure. For an authentication rollout failure, disable OmniRoute API-key enforcement while correcting the deployed credential; do not rely on Gemini fallback because `401`/`403` intentionally fail closed.
