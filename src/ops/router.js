@@ -338,3 +338,12 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
       if (body.reviewerNotes != null) changes = { ...changes, ...richTextPatchBody(P.reviewerNotes, body.reviewerNotes) };
       const audited = await auditedProperties(client, pageId, actor, action, changes, body.note);
       await client.patch(pageId, audited.properties);
+      return json({ ok: true, pageId, message: 'Review decision saved' });
+    }
+
+    return json({ error: 'not found' }, 404);
+  } catch (e) {
+    // Surface Notion/other failures inline — never swallow (Agents.md rule).
+    return json({ error: e.message }, 502);
+  }
+}
