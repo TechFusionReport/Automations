@@ -174,6 +174,22 @@ Codex operates in a sandboxed cloud environment. These rules are non-negotiable.
 
 ---
 
+🚧 Claude Cowork Cloud Sessions — GitHub Write Limitation (confirmed 2026-09-05)
+
+Claude running inside Cowork (Anthropic's cloud/desktop-linked sessions — distinct from Claude Code running locally on the tfr server) writes to GitHub through a session-side git proxy with its own per-session authorized repository set. This is separate from the connected GitHub account's actual token scopes, which already have full read/write admin on this org (verified via get_me + repo permissions).
+
+If a repo isn't on that session's proxy allowlist, every write call 403s with something like:
+
+access denied by the git proxy: <owner>/<repo> is not in this session's authorized repository set,
+so the proxy will not inject a credential for it. To fix, add the repository to the session's sources.
+
+Confirmed affected: both Automations and Website. Confirmed not limited to git push — create_branch and add_issue_comment (PR comments) via the GitHub MCP tool 403 the same way. Reads (get_file_contents, search_code, list_*, etc.) are unaffected and work normally.
+
+The proxy's own error message points at an add_repo mechanism to fix this — that mechanism does not currently exist in the Cowork UI or sandbox (tracked upstream: anthropics/claude-code#76248). There is no known user-side fix as of this writing.
+
+What this means in practice: a Cowork session cannot assume it can push, branch, or comment on this repo just because the GitHub connector shows as connected with full permissions. If a write 403s with the message above, don't retry it or hunt for a workaround — hand Justin ready-to-apply file content / patch text / PR body copy instead, same as if there were no GitHub write access at all. Claude Code running locally on the tfr server is a separate execution path and is not known to be affected by this proxy limitation.
+
+---
 ## ⚠️ Known Open Issues (last updated 2026-05-14)
 
 - `src/utils/` is empty placeholder — intentional
