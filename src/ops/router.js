@@ -21,7 +21,11 @@ const SORT_PUBLISHED_DESC = [{ property: P.publishedDate, direction: 'descending
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
-    status, headers: { 'Content-Type': 'application/json' },
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'private, no-store',
+    },
   });
 }
 
