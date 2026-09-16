@@ -349,6 +349,28 @@ export default {
           }
         }
       }
+      if (payload.action === 'closed' && payload.pull_request?.head?.ref?.startsWith('publish/')) {
+        const body = payload.pull_request.body || '';
+        const pageIdMatch = body.match(/Notion-Page-Id:\s*([a-f0-9-]+)/i);
+        const pathMatch = body.match(/Published-Path:\s*(\S+)/i);
+
+        if (pageIdMatch) {
+          const pageId = pageIdMatch[1];
+          const secrets = await getSecrets(env);
+          const agent = new PublishingAgent(env);
+
+          if (payload.pull_request.merged && pathMatch) {
+            const githubUrl = payload.pull_request.merge_commit_sha
+              ? `https://github.com/TechFusionReport/Website/blob/main/${pathMatch[1]}`
+              : '';
+            const canonicalUrl = `https://techfusionreport.com/${pathMatch[1]}`;
+            const date = pathMatch[1].match(/(\d{4}-\d{2}-\d{2})/)?.[1] || new Date().toISOString().split('T')[0];
+            await agent.markPublished(pageId, githubUrl, canonicalUrl, date, secrets);
+          } else if (!payload.pull_request.merged) {
+            await agent.markPrClosedUnmerged(pageId, payload.pull_request.html_url, secrets);
+          }
+        }
+      }
       return new Response('OK', { status: 200 });
     });
 
