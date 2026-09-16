@@ -5,6 +5,11 @@
 export const CATALOG_PROPERTIES = Object.freeze({
   status: 'Status',
   lastError: '⚠️ Last Error',
+  approvedForTranscription: '🎙️ Approved for Transcription?',
+  transcriptionApprovedAt: '⏱️ Transcription Approved At',
+  publishToGithub: '🚀 Publish to GitHub',
+  attemptCount: '🔢 Attempt Count',
+  retryDisposition: '🔁 Retry Disposition',
   title: 'Title',
   videoUrl: '🎬 Video URL',
   videoId: '🆔 Video ID',

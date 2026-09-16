@@ -7,12 +7,14 @@
 import { verifyAccessRequest } from './access.js';
 import {
   notionClient, queryBody, statusPatchBody, featuredPatchBody, richTextPatchBody,
+  checkboxPatchBody, numberPatchBody, selectPatchBody,
   mapQueueItem, mapDraftItem, mapDraftDetail, mapBoardItem, mapErrorItem, mapArchiveItem,
   countsFromCache, COUNTED_STATUSES, IN_PIPELINE_STATUSES,
 } from './notion.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
 import { EnhancementOrchestrator } from '../agents/enhancement.js';
 import { buildCommandCenter } from './command-center.js';
+import { buildObservability } from './observability.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -20,7 +22,11 @@ const SORT_PUBLISHED_DESC = [{ property: P.publishedDate, direction: 'descending
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
-    status, headers: { 'Content-Type': 'application/json' },
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'private, no-store',
+    },
   });
 }
 
@@ -228,11 +234,24 @@ async function auditedProperties(client, pageId, actor, action, changes = {}, no
 }
 
 // ── gate actions ─────────────────────────────────────────────────────────────
+// Pipeline State-Transition Contract §2: checkboxes are the human-authorization
+// signal, Status is n8n's automation-progress narration. approve-transcription and
+// approve-publish are handled explicitly below and must NOT write Status. Rejection
+// is the one deliberate exception (§2, §7): a terminal human decision, so /ops still
+// writes Status directly for it.
 const ACTION_STATUS = {
-  '/actions/approve-transcription': S.transcriptionApproved,
   '/actions/reject': S.rejected,
-  '/actions/approve-publish': S.publishApproved,
 };
+
+// Reset stale failure-tracking fields on (re-)approval so a record that previously
+// failed gets a clean retry budget once a human re-authorizes it.
+function failureMetadataReset() {
+  return {
+    ...numberPatchBody(P.attemptCount, 0),
+    ...selectPatchBody(P.retryDisposition, null),
+    ...richTextPatchBody(P.lastError, ''),
+  };
+}
 
 // ── entry ────────────────────────────────────────────────────────────────────
 export async function handleOps(request, env, ctx = {}, deps = {}) {
@@ -261,6 +280,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
         case '/command-center': return json(await (deps.commandCenter || buildCommandCenter)(env, secrets, { now }));
+        case '/observability': return json(await (deps.observability || buildObservability)(env, secrets, { now }));
         case '/queue': return json(await listQueue(client, dbId));
         case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor'), {
           title: url.searchParams.get('q') || '',
@@ -323,8 +343,33 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
 
       let changes;
       let action = sub.slice('/actions/'.length);
-      if (sub === '/actions/toggle-featured') changes = featuredPatchBody(body.value === true);
-      else {
+      if (sub === '/actions/toggle-featured') {
+        changes = featuredPatchBody(body.value === true);
+      } else if (sub === '/actions/approve-transcription') {
+        // Checkbox-only — n8n's Enhancement workflow owns Status from here.
+        changes = {
+          ...checkboxPatchBody(P.approvedForTranscription, true),
+          [P.transcriptionApprovedAt]: { date: { start: new Date(now()).toISOString() } },
+          ...failureMetadataReset(),
+        };
+      } else if (sub === '/actions/approve-publish') {
+        // Checkbox-only — n8n's Publisher workflow owns Status from here.
+        changes = {
+          ...checkboxPatchBody(P.publishToGithub, true),
+          ...failureMetadataReset(),
+        };
+      } else if (sub === '/actions/reject') {
+        // Terminal human decision — the deliberate exception to "Status is
+        // automation-owned." Clears both authorization checkboxes so neither n8n
+        // workflow can re-pick the record up, and marks Retry Disposition 'Terminal'
+        // so the recovery workflow's guard leaves it alone rather than seeing blank.
+        changes = {
+          ...statusPatchBody(S.rejected),
+          ...checkboxPatchBody(P.approvedForTranscription, false),
+          ...checkboxPatchBody(P.publishToGithub, false),
+          ...selectPatchBody(P.retryDisposition, 'Terminal'),
+        };
+      } else {
         const nextStatus = ACTION_STATUS[sub] || (sub === '/actions/return-revision' ? S.draftReview : null);
         if (!nextStatus) return json({ error: 'not found' }, 404);
         changes = statusPatchBody(nextStatus);
