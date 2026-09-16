@@ -49,6 +49,166 @@ export class PublishingAgent {
     return raw ? JSON.parse(raw) : {};
   }
 
+  githubHeaders(pat) {
+    return {
+      'Authorization': `token ${pat}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'TechFusionReport-Bot/1.0'
+    };
+  }
+
+  async ensureBranch(branchName, secrets) {
+    const headers = this.githubHeaders(secrets.github_pat);
+    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const existing = await fetch(`${base}/git/ref/heads/${branchName}`, { headers });
+    if (existing.ok) return;
+    const mainRef = await fetch(`${base}/git/ref/heads/main`, { headers });
+    if (!mainRef.ok) throw new Error(`Failed to read main ref: ${await mainRef.text()}`);
+    const { object: { sha } } = await mainRef.json();
+    const createRes = await fetch(`${base}/git/refs`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha })
+    });
+    if (!createRes.ok && createRes.status !== 422) {
+      throw new Error(`Failed to create branch ${branchName}: ${await createRes.text()}`);
+    }
+  }
+
+  async commitFileToBranch(path, contentString, message, branch, secrets, { isBase64 = false } = {}) {
+    const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
+    const apiBase = `https://api.github.com/repos/TechFusionReport/Website/contents/${path}`;
+    const checkRes = await fetch(`${apiBase}?ref=${branch}`, { headers });
+    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
+    const content = isBase64 ? contentString : btoa(unescape(encodeURIComponent(contentString)));
+    const commitRes = await fetch(apiBase, {
+      method: 'PUT', headers,
+      body: JSON.stringify({
+        message, content, branch, ...(sha ? { sha } : {}),
+        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
+      })
+    });
+    if (!commitRes.ok) throw new Error(`GitHub commit failed (${path}): ${await commitRes.text()}`);
+    return (await commitRes.json()).content.html_url;
+  }
+
+  async openPublishPR(branch, metadata, notionPageId, secrets) {
+    const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
+    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const prRes = await fetch(`${base}/pulls`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        title: `Publish: ${metadata.title}`, head: branch, base: 'main',
+        body: [
+          `Automated publish for a TechFusion Report Content Catalog v2 record.`, ``,
+          `Notion-Page-Id: ${notionPageId}`,
+          `Published-Slug: ${metadata.slug}`,
+          `Published-Path: ${metadata.path}`, ``,
+          `**Agent:** TFR Publisher Bot`,
+          `**Task:** N/A — automated pipeline`,
+          `**Risk:** Low — new content file + posts.json entry only, no code changes.`
+        ].join('\n')
+      })
+    });
+    if (!prRes.ok) throw new Error(`PR creation failed: ${await prRes.text()}`);
+    return await prRes.json();
+  }
+
+  async tryMergePR(prNumber, secrets) {
+    const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
+    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const res = await fetch(`${base}/pulls/${prNumber}/merge`, {
+      method: 'PUT', headers, body: JSON.stringify({ merge_method: 'squash' })
+    });
+    if (res.ok) return { merged: true };
+    return { merged: false, error: await res.text() };
+  }
+
+  async getPRState(prNumber, secrets) {
+    const headers = this.githubHeaders(secrets.github_pat);
+    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const res = await fetch(`${base}/pulls/${prNumber}`, { headers });
+    if (!res.ok) return null;
+    const pr = await res.json();
+    return { state: pr.state, merged: pr.merged, html_url: pr.html_url, number: pr.number };
+  }
+
+  extractPRNumber(prUrl) {
+    const m = String(prUrl || '').match(/\/pull\/(\d+)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  async updatePostsJsonOnBranch(metadata, branch, secrets) {
+    const headers = this.githubHeaders(secrets.github_pat);
+    const apiBase = 'https://api.github.com/repos/TechFusionReport/Website/contents/posts.json';
+    const existing = await fetch(`${apiBase}?ref=${branch}`, { headers });
+    let posts = [];
+    if (existing.ok) {
+      const data = await existing.json();
+      try { posts = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))))); }
+      catch { posts = []; }
+    }
+    const newSlug = `${metadata.date}-${metadata.slug}`;
+    posts = posts.filter(p => p.slug !== newSlug);
+    posts.unshift({
+      title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
+      category: metadata.category || 'Technology', excerpt: metadata.description || '',
+      url: `/_posts/${newSlug}.html`
+    });
+    await this.commitFileToBranch('posts.json', JSON.stringify(posts, null, 2),
+      `Update posts.json: add ${metadata.title}`, branch, secrets);
+  }
+
+  async markPublished(pageId, githubUrl, canonicalUrl, date, secrets) {
+    const token = secrets.notion_token;
+    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+      body: JSON.stringify({
+        properties: {
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.publishedToGithub } },
+          [CATALOG_PROPERTIES.publishedUrl]: { url: githubUrl },
+          [CATALOG_PROPERTIES.canonicalUrl]: { url: canonicalUrl },
+          [CATALOG_PROPERTIES.publishedToGithub]: { checkbox: true },
+          [CATALOG_PROPERTIES.publishedDate]: { date: { start: date } },
+          [CATALOG_PROPERTIES.publishPrUrl]: { url: null },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [] }
+        }
+      })
+    });
+  }
+
+  async markAwaitingMerge(pageId, prUrl, mergeError, secrets) {
+    const token = secrets.notion_token;
+    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+      body: JSON.stringify({
+        properties: {
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.publishPrOpen } },
+          [CATALOG_PROPERTIES.publishPrUrl]: { url: prUrl },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content:
+            `Not an error — PR opened, needs a human merge (branch protection requires review): ${(mergeError || '').substring(0, 400)}`
+          } }] }
+        }
+      })
+    });
+  }
+
+  async markPrClosedUnmerged(pageId, prUrl, secrets) {
+    const token = secrets.notion_token;
+    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+      body: JSON.stringify({
+        properties: {
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.needsReReview } },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: `Publish PR was closed without merging: ${prUrl}` } }] }
+        }
+      })
+    });
+  }
+
   async publish({
     notionPageId,
     title,
@@ -98,8 +258,15 @@ export class PublishingAgent {
     metadata.relatedArticles = await this.findRelatedArticles(metadata);
     const html = this.convertToHTML(contentWithAffiliates, metadata);
 
-    const githubUrl = await this.commitToGitHub(path, html, metadata, secrets);
-    await this.updatePostsJson(metadata, githubUrl, secrets);
+    const branch = `publish/${notionPageId}-${slug}`;
+    await this.ensureBranch(branch, secrets);
+    const githubUrl = await this.commitFileToBranch(
+      path, html, `Add: ${title} [${metadata.category}]`, branch, secrets
+    );
+    await this.updatePostsJsonOnBranch(metadata, branch, secrets);
+
+    const pr = await this.openPublishPR(branch, metadata, notionPageId, secrets);
+    const mergeResult = await this.tryMergePR(pr.number, secrets);
 
     await this.env.CONTENT_KV.put(`article:${slug}`, JSON.stringify({
       ...metadata,
@@ -108,13 +275,17 @@ export class PublishingAgent {
       views: 0
     }));
 
-    await this.updateNotionRecord(notionPageId, githubUrl, canonicalUrl, date, secrets);
+    if (mergeResult.merged) {
+      await fetch(`https://api.github.com/repos/TechFusionReport/Website/git/refs/heads/${branch}`,
+        { method: 'DELETE', headers: this.githubHeaders(secrets.github_pat) }).catch(() => {});
+      await this.markPublished(notionPageId, githubUrl, canonicalUrl, date, secrets);
+      return new Response(JSON.stringify({ status: 'published', url: canonicalUrl, github: githubUrl, pr: pr.html_url }),
+        { headers: { 'Content-Type': 'application/json' } });
+    }
 
-    return new Response(JSON.stringify({
-      status: 'published',
-      url: canonicalUrl,
-      github: githubUrl
-    }), { headers: { 'Content-Type': 'application/json' } });
+    await this.markAwaitingMerge(notionPageId, pr.html_url, mergeResult.error, secrets);
+    return new Response(JSON.stringify({ status: 'awaiting-merge', pr: pr.html_url, reason: mergeResult.error }),
+      { headers: { 'Content-Type': 'application/json' } });
   }
 
   async findRelatedArticles(metadata) {
@@ -148,133 +319,6 @@ export class PublishingAgent {
     } catch (e) {
       console.warn('Related article lookup failed:', e.message);
       return [];
-    }
-  }
-
-  async updatePostsJson(metadata, githubUrl, secrets) {
-    const pat = secrets.github_pat;
-    const owner = this.env.WEBSITE_REPO_OWNER || 'TechFusionReport';
-    const repo = this.env.WEBSITE_REPO_NAME || 'Website';
-    const branch = this.env.WEBSITE_REPO_BRANCH || 'main';
-    const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents/posts.json`;
-    const headers = {
-      'Authorization': `token ${pat}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'TechFusionReport-Bot/1.0'
-    };
-
-    const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(branch)}`, { headers });
-    let posts = [];
-    let sha;
-    if (existing.ok) {
-      const data = await existing.json();
-      sha = data.sha;
-      try {
-        posts = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
-      } catch { posts = []; }
-    }
-
-    const newSlug = `${metadata.date}-${metadata.slug}`;
-    posts = posts.filter(p => p.slug !== newSlug);
-    posts.unshift({
-      title: metadata.title,
-      seoTitle: metadata.seoTitle,
-      slug: newSlug,
-      date: metadata.date,
-      category: metadata.category || 'Technology',
-      excerpt: metadata.description || '',
-      url: `/_posts/${newSlug}.html`
-    });
-
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(posts, null, 2))));
-    const res = await fetch(apiBase, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify({
-        message: `Update posts.json: add ${metadata.title}`,
-        content: encoded,
-        branch,
-        ...(sha ? { sha } : {}),
-        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
-      })
-    });
-
-    if (!res.ok) console.error('posts.json update failed:', await res.text());
-  }
-
-  async commitToGitHub(path, html, metadata, secrets) {
-    const pat = secrets.github_pat;
-    if (!pat) throw new Error('github_pat missing from secrets');
-    const owner = this.env.WEBSITE_REPO_OWNER || 'TechFusionReport';
-    const repo = this.env.WEBSITE_REPO_NAME || 'Website';
-    const branch = this.env.WEBSITE_REPO_BRANCH || 'main';
-    const base64Content = btoa(unescape(encodeURIComponent(html)));
-    const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    const headers = {
-      'Authorization': `token ${pat}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'TechFusionReport-Bot/1.0'
-    };
-
-    const checkRes = await fetch(`${apiBase}?ref=${encodeURIComponent(branch)}`, { headers });
-    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
-
-    const commitRes = await fetch(apiBase, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify({
-        message: `Add: ${metadata.title} [${metadata.category}]`,
-        content: base64Content,
-        branch,
-        ...(sha ? { sha } : {}),
-        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
-      })
-    });
-
-    if (!commitRes.ok) throw new Error(`GitHub commit failed: ${await commitRes.text()}`);
-    return (await commitRes.json()).content.html_url;
-  }
-
-  async updateNotionRecord(pageId, githubUrl, canonicalUrl, date, secrets) {
-    const token = secrets.notion_token;
-    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      body: JSON.stringify({
-        properties: {
-          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.publishedToGithub } },
-          [CATALOG_PROPERTIES.publishedUrl]: { url: githubUrl },
-          [CATALOG_PROPERTIES.canonicalUrl]: { url: canonicalUrl },
-          [CATALOG_PROPERTIES.publishedToGithub]: { checkbox: true },
-          [CATALOG_PROPERTIES.publishedDate]: { date: { start: date } }
-        }
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      console.error('Notion record update failed:', err);
-      await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Notion-Version': '2022-06-28'
-        },
-        body: JSON.stringify({
-          properties: {
-            [CATALOG_PROPERTIES.lastError]: {
-              rich_text: [{ text: { content: `Notion update failed: ${err.substring(0, 500)}` } }]
-            }
-          }
-        })
-      });
     }
   }
 

@@ -21,6 +21,7 @@ export const CATALOG_PROPERTIES = Object.freeze({
   source: '\u00a0📡 Source',
   publishedToGithub: '✅ Published To Github',
   publishedUrl: '🔗 Published URL',
+  publishPrUrl: '🔗 Publish PR URL',
   publishedDate: '📅 Published Date',
   seoTitle: '📰 SEO Title',
   seoSlug: '📰 SEO Slug',
@@ -48,6 +49,8 @@ export const CATALOG_STATUS = Object.freeze({
   draftReview: '📝 Draft Review',
   draftApproval: '✅ Draft Approval',
   publishApproved: '🚀 Publish Approved',
+  publishPrOpen: '📝 Publish PR Open',
+  needsReReview: '⚠️ Needs Re-review',
   publishedToGithub: '✅Published To Github',
   errors: '❌ Errors',
   rejected: '❌ Rejected'
