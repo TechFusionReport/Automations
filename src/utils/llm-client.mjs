@@ -70,7 +70,7 @@ export class LlmClient {
     try {
       return await this.callOmniRoute({ prompt, workflow, temperature, maxTokens });
     } catch (error) {
-      if (!this.config.fallbackEnabled) throw error;
+      if (!this.shouldFallback(error)) throw error;
       return this.callGeminiFallback({
         prompt,
         workflow,
@@ -81,6 +81,10 @@ export class LlmClient {
         omniRouteError: error,
       });
     }
+  }
+
+  shouldFallback(error) {
+    return this.config.fallbackEnabled && error?.category !== 'authentication';
   }
 
   async callOmniRoute({ prompt, workflow, temperature, maxTokens }) {
@@ -149,7 +153,7 @@ export class LlmClient {
         errorCategory: normalized.category,
         httpStatus: normalized.status || null,
         retryCount: 0,
-        fallbackActivated: this.config.fallbackEnabled,
+        fallbackActivated: this.shouldFallback(normalized),
       });
       throw normalized;
     } finally {

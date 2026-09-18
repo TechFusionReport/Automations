@@ -68,6 +68,31 @@ test('sends bearer authentication only when configured', async () => {
   assert.equal(authorization, 'Bearer omni-test-key');
 });
 
+for (const status of [401, 403]) {
+  test(`${status} fails closed without invoking Gemini fallback`, async () => {
+    const calls = [];
+    const events = [];
+    const llm = new LlmClient({
+      OMNIROUTE_BASE_URL: 'https://omni.example',
+      OMNIROUTE_FALLBACK_ENABLED: 'true',
+    }, { gemini_api_key: 'gemini-test-key' }, {
+      fetchImpl: async (url) => {
+        calls.push(url);
+        return response({ status, body: { error: 'invalid credential' } });
+      },
+      logger: { log(value) { events.push(JSON.parse(value)); } },
+    });
+
+    await assert.rejects(
+      llm.completeText({ prompt: 'test', workflow: 'test' }),
+      error => error instanceof LlmRequestError && error.category === 'authentication' && error.status === status
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 'https://omni.example/v1/chat/completions');
+    assert.equal(events.at(-1).fallbackActivated, false);
+  });
+}
+
 for (const [name, status, category] of [
   ['authentication failure', 401, 'authentication'],
   ['rate limiting', 429, 'rate_limit'],
