@@ -57,6 +57,18 @@ export function featuredPatchBody(value) {
   return { [P.featured]: { checkbox: value === true } };
 }
 
+export function checkboxPatchBody(name, value) {
+  return { [name]: { checkbox: value === true } };
+}
+
+export function numberPatchBody(name, value) {
+  return { [name]: { number: value } };
+}
+
+export function selectPatchBody(name, value) {
+  return { [name]: { select: value ? { name: value } : null } };
+}
+
 export function richTextPatchBody(name, value) {
   const text = String(value || '');
   const rich_text = [];

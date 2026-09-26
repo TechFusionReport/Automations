@@ -82,7 +82,7 @@ export class PublisherPoller {
 
     if (!response.ok) {
       console.error('Publisher Poller: Notion query failed:', await response.text());
-      return { processed: 0, blocked: 0, errors: [] };
+      return { processed: 0, blocked: 0, awaitingMerge: 0, errors: [] };
     }
 
     const data = await response.json();
@@ -91,17 +91,19 @@ export class PublisherPoller {
 
     if (records.length === 0) {
       await this.env.CONTENT_KV.put('last_publish_poll', JSON.stringify({
-        timestamp: new Date().toISOString(), found: 0, processed: 0, blocked: 0, errors: []
+        timestamp: new Date().toISOString(), found: 0, processed: 0, blocked: 0, awaitingMerge: 0, errors: []
       }));
-      return { processed: 0, blocked: 0, errors: [] };
+      return { processed: 0, blocked: 0, awaitingMerge: 0, errors: [] };
     }
 
-    const results = { processed: 0, blocked: 0, errors: [] };
+    const results = { processed: 0, blocked: 0, awaitingMerge: 0, errors: [] };
 
     for (const record of records) {
       try {
         const result = await this.publishPage(record, token, secrets);
         if (result?.blocked) results.blocked++;
+        else if (result?.awaitingMerge) results.awaitingMerge++;
+        else if (result?.skipped || result?.errored) { /* no-op, already logged/handled */ }
         else results.processed++;
       } catch (error) {
         const title = record.properties?.[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || record.id;
@@ -124,8 +126,29 @@ export class PublisherPoller {
     const pageId = page.id;
     const props = page.properties || {};
     const title = props[CATALOG_PROPERTIES.title]?.title?.[0]?.text?.content || 'Untitled';
-    const gate = this.seoGate(props);
 
+    if (props[CATALOG_PROPERTIES.publishedToGithub]?.checkbox) {
+      return { skipped: true, reason: 'already published' };
+    }
+
+    const existingPrUrl = props[CATALOG_PROPERTIES.publishPrUrl]?.url;
+    if (existingPrUrl) {
+      const agent = new PublishingAgent(this.env);
+      const prNumber = agent.extractPRNumber(existingPrUrl);
+      const prState = prNumber ? await agent.getPRState(prNumber, secrets) : null;
+
+      if (prState?.state === 'open') {
+        return { awaitingMerge: true, prUrl: existingPrUrl };
+      }
+      if (prState?.merged) {
+        console.warn(`Publisher Poller: PR for ${pageId} was merged but Notion wasn't updated — completing now.`);
+        await this.writeError(pageId, `PR ${existingPrUrl} was merged but the Notion update webhook never ran — check manually.`, token);
+        return { errored: true };
+      }
+      console.log(`Publisher Poller: stale/closed PR for "${title}" (${existingPrUrl}), retrying fresh`);
+    }
+
+    const gate = this.seoGate(props);
     if (!gate.passed) {
       const reason = `Publishing blocked by SEO gate: score ${gate.score}/${SEO_PASS_SCORE}` +
         (gate.missing.length ? `; missing ${gate.missing.join(', ')}` : '');
@@ -158,8 +181,8 @@ export class PublisherPoller {
       imageAltText: this.readRichText(props[CATALOG_PROPERTIES.imageAltText]) || null
     });
 
-    console.log(`Publisher Poller: ✅ published "${title}"`);
-    return result;
+    const body = await result.json();
+    return body.status === 'published' ? { processed: true } : { awaitingMerge: true, prUrl: body.pr };
   }
 
   async readBlogDraft(pageId, token) {

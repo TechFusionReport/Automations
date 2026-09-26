@@ -82,8 +82,9 @@ async function verifySignature(jwk, signingInput, signatureBytes) {
 }
 
 function audMatches(payloadAud, expected) {
-  if (Array.isArray(payloadAud)) return payloadAud.includes(expected);
-  return payloadAud === expected;
+  const expectedAudiences = String(expected || '').split(',').map((value) => value.trim()).filter(Boolean);
+  const tokenAudiences = Array.isArray(payloadAud) ? payloadAud : [payloadAud];
+  return expectedAudiences.some((audience) => tokenAudiences.includes(audience));
 }
 
 /**
@@ -92,7 +93,7 @@ function audMatches(payloadAud, expected) {
  */
 export async function verifyAccessRequest(request, env, { fetchImpl = fetch, now = Date.now } = {}) {
   if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) {
-    return { ok: false, status: 500, error: 'Access not configured (ACCESS_TEAM_DOMAIN / ACCESS_AUD)' };
+    return { ok: false, status: 500, error: 'Access not configured (ACCESS_TEAM_DOMAIN / ACCESS_AUD allowlist)' };
   }
 
   const token = readAccessToken(request);
