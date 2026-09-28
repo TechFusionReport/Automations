@@ -56,6 +56,8 @@ export const CATALOG_STATUS = Object.freeze({
   publishApproved: '🚀 Publish Approved',
   publishPrOpen: '📝 Publish PR Open',
   needsReReview: '⚠️ Needs Re-review',
+  transcriptionFailed: '❌ Transcription Failed',
+  publishFailed: '❌ Publish Failed',
   publishedToGithub: '✅Published To Github',
   errors: '❌ Errors',
   rejected: '❌ Rejected'

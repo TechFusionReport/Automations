@@ -2,10 +2,8 @@
 // v5.0.0 — fully poll-based, no webhook dependency
 
 import DiscoveryAgent    from './agents/discovery.js';
-import { EnhancementOrchestrator as EnhancementAgent } from './agents/enhancement.js';
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
-import { EnhancementPoller }  from './agents/enhancement-poller.js';
 import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
@@ -60,10 +58,13 @@ export default {
       return await new DiscoveryAgent(env).run();
     });
 
-    router.post('/enhance', async (req, env) => {
-      const data = await req.json();
-      return await new EnhancementAgent(env).start(data);
-    });
+    router.post('/enhance', async () =>
+      json({
+        error: 'Worker enhancement retired',
+        owner: 'n8n',
+        workflowId: 'YF1dipB0E8BSF5Ae'
+      }, 410)
+    );
 
     router.post('/publish', async (req, env) => {
       const data = await req.json();
@@ -71,10 +72,9 @@ export default {
     });
 
     // ── Manual poll triggers (for testing without waiting for cron) ────────
-    router.post('/admin/enhance-poll', async (req, env) => {
-      const result = await new EnhancementPoller(env).run();
-      return json(result);
-    });
+    router.post('/admin/enhance-poll', async () =>
+      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
+    );
 
     router.post('/admin/publish-poll', async (req, env) => {
       const result = await new PublisherPoller(env).run();
@@ -82,12 +82,9 @@ export default {
     });
 
     // Single record triggers (for manual testing a specific page)
-    router.post('/admin/enhance-single', async (req, env) => {
-      const { pageId } = await req.json();
-      if (!pageId) return json({ error: 'pageId required' }, 400);
-      const result = await new EnhancementPoller(env).runSingle(pageId);
-      return json(result);
-    });
+    router.post('/admin/enhance-single', async () =>
+      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
+    );
 
     router.post('/admin/publish-single', async (req, env) => {
       const { pageId } = await req.json();
@@ -375,20 +372,9 @@ export default {
     });
 
     // ── Batch operations ───────────────────────────────────────────────────
-    router.post('/batch/enhance', async (req, env) => {
-      const { pageIds } = await req.json();
-      const results = [];
-      const poller  = new EnhancementPoller(env);
-      for (const pageId of pageIds) {
-        try {
-          await poller.runSingle(pageId);
-          results.push({ pageId, status: 'queued' });
-        } catch (error) {
-          results.push({ pageId, status: 'error', error: error.message });
-        }
-      }
-      return json({ processed: results.length, results });
-    });
+    router.post('/batch/enhance', async () =>
+      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
+    );
 
     router.post('/batch/publish', async (req, env) => {
       const { pageIds } = await req.json();
@@ -453,9 +439,9 @@ export default {
           case 'discover':
             await new DiscoveryAgent(env).run(); break;
           case 'enhance':
-            await new EnhancementPoller(env).runSingle(data.notionPageId); break;
           case 'research': case 'structure': case 'factcheck': case 'finalize':
-            await new EnhancementAgent(env).processMessage({ type, ...data }); break;
+            console.warn(`Ignoring retired Worker enhancement message [${type}]; n8n owns enhancement`);
+            break;
           case 'publish':
             await new PublisherPoller(env).runSingle(data.notionPageId); break;
           case 'crosspost':
@@ -483,15 +469,12 @@ export default {
         await new DiscoveryAgent(env).run();
         break;
 
-      // Every 30 minutes — poll for records to enhance AND publish
+      // Every 30 minutes — n8n owns enhancement; Worker only polls publishing.
       case '*/30 * * * *': {
-        // Run enhancement first, then publishing
-        const enhanceResult = await new EnhancementPoller(env).run();
         const publishResult = await new PublisherPoller(env).run();
         console.log(
-          `Poll complete — Enhanced: ${enhanceResult.processed}, ` +
-          `Published: ${publishResult.processed}, ` +
-          `Errors: ${enhanceResult.errors.length + publishResult.errors.length}`
+          `Publish poll complete — Published: ${publishResult.processed}, ` +
+          `Errors: ${publishResult.errors.length}`
         );
         break;
       }

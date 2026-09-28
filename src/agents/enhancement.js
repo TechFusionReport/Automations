@@ -47,6 +47,42 @@ function clampSeoScore(value) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+function isYouTubeUrl(url = '') {
+  return /(?:youtube\.com|youtu\.be)/i.test(String(url || ''));
+}
+
+function contentScore(text = '', title = '') {
+  const clean = String(text || '').trim();
+  const words = clean.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  if (wordCount === 0) return { score: 0, wordCount };
+
+  let score = Math.min(50, Math.floor(wordCount / 20));
+
+  const titleWords = String(title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+  const lowerClean = clean.toLowerCase();
+  if (titleWords.length) {
+    const matched = titleWords.filter(w => lowerClean.includes(w));
+    score += Math.round((matched.length / titleWords.length) * 30);
+  }
+
+  const badPatterns = [
+    /subscribe to (continue|read)/i,
+    /enable javascript/i,
+    /accept (all )?cookies/i,
+    /sign in to (continue|read)/i,
+    /403 forbidden/i,
+    /page not found/i,
+    /captcha/i
+  ];
+  score -= badPatterns.filter(p => p.test(clean)).length * 20;
+
+  return { score: Math.max(0, Math.min(100, score)), wordCount };
+}
+
+const FIRECRAWL_MIN_SCORE = 55;
+const FIRECRAWL_MIN_WORDS = 250;
+
 function calculateSeoScore({ seoTitle, seoMeta, focusKeyword, blogDraft, altText, faq, schemaType }) {
   let score = 0;
   const focus = String(focusKeyword || '').toLowerCase();
@@ -183,6 +219,36 @@ ${draft}`, secrets, 0.1);
     }
   }
 
+  async scrapeWithFirecrawl(url, secrets, timeoutMs = 20000) {
+    const apiKey = secrets.firecrawl_api_key;
+    if (!apiKey || !url) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch('https://api.firecrawl.dev/v2/scrape', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true }),
+        signal: controller.signal
+      });
+      if (!res.ok) {
+        console.warn(`scrapeWithFirecrawl: Firecrawl returned ${res.status} for ${url}`);
+        return null;
+      }
+      const data = await res.json();
+      const markdown = data?.data?.markdown || data?.markdown || '';
+      return markdown ? markdown.trim().slice(0, 120000) : null;
+    } catch (e) {
+      console.warn(`scrapeWithFirecrawl failed for ${url}:`, e.message);
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async start({
     notionPageId,
     videoUrl,
@@ -202,14 +268,30 @@ ${draft}`, secrets, 0.1);
     let groundingTitle = title || videoUrl;
     let groundingDesc = sourceDescription || '';
     const sourceTranscript = String(transcript || '').trim().slice(0, 120000);
+    let scrapedArticleContent = '';
+    let groundingSource = 'title-only';
 
     if (videoId) {
       const ytDetails = await this.fetchYouTubeVideoDetails(videoId, secrets);
       if (ytDetails) {
         groundingTitle = ytDetails.title || groundingTitle;
         groundingDesc = ytDetails.description || groundingDesc;
+        groundingSource = 'youtube-metadata';
+      }
+    } else if (videoUrl && !isYouTubeUrl(videoUrl)) {
+      const scraped = await this.scrapeWithFirecrawl(videoUrl, secrets);
+      if (scraped) {
+        const { score, wordCount } = contentScore(scraped, groundingTitle);
+        if (score >= FIRECRAWL_MIN_SCORE && wordCount >= FIRECRAWL_MIN_WORDS) {
+          scrapedArticleContent = scraped;
+          groundingSource = 'firecrawl';
+        } else {
+          console.warn(`Enhancement: Firecrawl content for ${videoUrl} failed quality gate (score ${score}, words ${wordCount}); falling back to title/description only.`);
+        }
       }
     }
+
+    if (sourceTranscript) groundingSource = 'transcript';
 
     const primaryDefaults = uniqueKeywords(seoDefaults.primaryKeywords || []);
     const secondaryDefaults = uniqueKeywords(seoDefaults.secondaryKeywords || []);
@@ -238,8 +320,11 @@ Category: ${category}
 Section: ${section}
 Tags: ${(tags || []).join(', ')}
 ${creatorGuidance}
-${sourceTranscript ? `Original Transcript:
-${sourceTranscript}` : 'Original Transcript: unavailable; rely only on the title and description above.'}
+${sourceTranscript
+  ? `Original Transcript:\n${sourceTranscript}`
+  : scrapedArticleContent
+    ? `Source Article Content (scraped from ${videoUrl}):\n${scrapedArticleContent}`
+    : 'Original Transcript: unavailable; rely only on the title and description above.'}
 
 Requirements:
 - 800–1200 words
@@ -256,7 +341,8 @@ Write the full blog post in HTML (use <h2>, <p>, <ul>, <li> tags).`;
     const blogDraft = await this.callLlm(blogPrompt, secrets, 0.75);
     if (!blogDraft || blogDraft.trim().length < 100) throw new Error('LLM returned empty or insufficient blog draft');
 
-    const keyPointComparison = sourceTranscript
+    const comparisonSource = sourceTranscript || scrapedArticleContent;
+    const keyPointComparison = comparisonSource
       ? await this.callLlm(
           `Compare the original transcript with the generated blog draft for a human editor.
 Do not introduce outside facts. Return concise plain text using exactly these headings:
@@ -277,7 +363,7 @@ COVERAGE ESTIMATE
 - A cautious percentage estimate with one-sentence rationale
 
 ORIGINAL TRANSCRIPT:
-${sourceTranscript}
+${comparisonSource}
 
 BLOG DRAFT:
 ${blogDraft}`,
@@ -455,7 +541,8 @@ LINKEDIN: [LinkedIn post, professional tone, 3-4 sentences]`;
       schemaType,
       seoScore,
       comparisonGenerated: Boolean(keyPointComparison),
-      blogWordCount: blogDraft.split(/\s+/).length
+      blogWordCount: blogDraft.split(/\s+/).length,
+      groundingSource
     };
   }
 

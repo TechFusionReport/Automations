@@ -21,6 +21,23 @@ const getCheckbox = (page, name) => prop(page, name)?.checkbox === true;
 const getDate = (page, name) => prop(page, name)?.date?.start ?? null;
 const getStatusName = (page, name) => prop(page, name)?.status?.name ?? null;
 
+export function jobIdFromPageId(pageId) {
+  const compact = String(pageId || '').replace(/-/g, '').toLowerCase();
+  return compact ? `tfr:${compact}` : null;
+}
+
+function workflowFields(page) {
+  return {
+    jobId: jobIdFromPageId(page.id),
+    status: getStatusName(page, P.status),
+    attemptCount: getNumber(page, P.attemptCount) ?? 0,
+    retryDisposition: getSelect(page, P.retryDisposition),
+    lastError: plainText(page, P.lastError),
+    approvedForTranscription: getCheckbox(page, P.approvedForTranscription),
+    publishToGithub: getCheckbox(page, P.publishToGithub),
+  };
+}
+
 const notionUrl = (id) => `https://www.notion.so/${String(id).replace(/-/g, '')}`;
 
 function truncate(str, len = DRAFT_PREVIEW_LEN) {
@@ -79,6 +96,7 @@ export function richTextPatchBody(name, value) {
 // ── view mappers ─────────────────────────────────────────────────────────────
 export function mapQueueItem(page) {
   return {
+    ...workflowFields(page),
     id: page.id,
     notionUrl: notionUrl(page.id),
     title: titleText(page, P.title),
@@ -94,6 +112,7 @@ export function mapQueueItem(page) {
 export function mapDraftItem(page) {
   const draft = plainText(page, P.blogDraft);
   return {
+    ...workflowFields(page),
     id: page.id,
     notionUrl: notionUrl(page.id),
     title: titleText(page, P.title),
@@ -126,11 +145,11 @@ export function mapDraftDetail(page) {
 
 export function mapBoardItem(page) {
   return {
+    ...workflowFields(page),
     id: page.id,
     notionUrl: notionUrl(page.id),
     title: titleText(page, P.title),
     category: getSelect(page, P.category),
-    status: getStatusName(page, P.status),
     featured: getCheckbox(page, P.featured),
     publishedToGithub: getCheckbox(page, P.publishedToGithub),
   };
@@ -138,11 +157,10 @@ export function mapBoardItem(page) {
 
 export function mapErrorItem(page) {
   return {
+    ...workflowFields(page),
     id: page.id,
     notionUrl: notionUrl(page.id),
     title: titleText(page, P.title),
-    lastError: plainText(page, P.lastError),
-    status: getStatusName(page, P.status),
     source: getMulti(page, P.source),
   };
 }
@@ -200,6 +218,7 @@ const COUNTS_KV_KEY = 'ops_counts_cache';
 export const COUNTED_STATUSES = [
   S.notStarted, S.pendingReview, S.transcriptionApproved, S.inProgress,
   S.draftGenerated, S.draftReview, S.draftApproval, S.publishApproved,
+  S.publishPrOpen, S.needsReReview, S.transcriptionFailed, S.publishFailed,
   S.publishedToGithub, S.errors, S.rejected,
 ];
 

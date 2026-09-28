@@ -69,9 +69,104 @@ async function listDrafts(client, dbId, cursor, filters = {}) {
 }
 
 async function listErrors(client, dbId, pageSize = 50) {
-  const data = await client.query(dbId, queryBody({ statuses: [S.errors, S.rejected], pageSize }));
+  const data = await client.query(dbId, queryBody({
+    statuses: [S.errors, S.transcriptionFailed, S.publishFailed, S.needsReReview, S.rejected],
+    pageSize,
+  }));
   const items = (data.results || []).map(mapErrorItem);
   return { items, count: items.length };
+}
+
+const ACTION_PRIORITY = Object.freeze({ critical: 0, high: 1, medium: 2, low: 3 });
+
+function contentAction(item) {
+  const base = {
+    id: item.id,
+    jobId: item.jobId,
+    source: 'content',
+    title: item.title || 'Untitled content item',
+    status: item.status,
+    notionUrl: item.notionUrl,
+    attemptCount: item.attemptCount,
+    retryDisposition: item.retryDisposition,
+    reason: item.lastError || null,
+  };
+  if (item.status === S.pendingReview) {
+    return { ...base, type: 'transcription-review', priority: 'high', targetView: 'queue', recommendedAction: 'Review source and approve or reject transcription' };
+  }
+  if ([S.draftGenerated, S.draftReview, S.draftApproval].includes(item.status)) {
+    return { ...base, type: 'draft-review', priority: 'high', targetView: 'drafts', recommendedAction: 'Review the grounded draft and approve, revise, or reject' };
+  }
+  if (item.status === S.needsReReview) {
+    return { ...base, type: 'quality-review', priority: 'critical', targetView: 'drafts', recommendedAction: 'Inspect the quality failure before re-authorizing processing' };
+  }
+  if (item.status === S.transcriptionFailed) {
+    const human = item.retryDisposition === 'Human Review';
+    return {
+      ...base,
+      type: 'transcription-failure',
+      priority: human ? 'critical' : 'medium',
+      targetView: 'errors',
+      recommendedAction: human ? 'Inspect the error and re-authorize transcription' : 'Automatic retry is scheduled; inspect only if it persists',
+      action: human ? 'approve-transcription' : null,
+    };
+  }
+  if (item.status === S.publishFailed) {
+    const human = item.retryDisposition === 'Human Review';
+    return {
+      ...base,
+      type: 'publish-failure',
+      priority: human ? 'critical' : 'medium',
+      targetView: 'errors',
+      recommendedAction: human ? 'Inspect the error and re-authorize publishing' : 'Automatic retry is scheduled; inspect only if it persists',
+      action: human ? 'approve-publish' : null,
+    };
+  }
+  if (item.status === S.errors) {
+    return { ...base, type: 'automation-error', priority: 'critical', targetView: 'errors', recommendedAction: 'Inspect the latest automation error' };
+  }
+  return null;
+}
+
+export function normalizeActionQueue(contentItems = [], commandCenter = {}) {
+  const actions = contentItems.map(contentAction).filter(Boolean);
+  for (const item of commandCenter.attention || []) {
+    actions.push({
+      id: `${item.source}:${item.type}:${item.title}`,
+      jobId: null,
+      source: item.source,
+      type: item.type,
+      title: item.title,
+      priority: item.type === 'health' ? 'critical' : item.type === 'draft-pr' ? 'medium' : 'high',
+      reason: null,
+      recommendedAction: item.type === 'health' ? 'Open the affected service and investigate' : 'Open the authoritative record',
+      externalUrl: item.url,
+      targetView: null,
+      action: null,
+    });
+  }
+  return actions.sort((a, b) =>
+    ACTION_PRIORITY[a.priority] - ACTION_PRIORITY[b.priority]
+    || a.title.localeCompare(b.title));
+}
+
+async function listActionQueue(env, secrets, client, dbId, now, deps = {}) {
+  const statuses = [
+    S.pendingReview, S.draftGenerated, S.draftReview, S.draftApproval,
+    S.needsReReview, S.transcriptionFailed, S.publishFailed, S.errors,
+  ];
+  const [content, commandCenter] = await Promise.all([
+    client.query(dbId, queryBody({ statuses, sorts: SORT_CREATED_ASC, pageSize: 100 })),
+    (deps.commandCenter || buildCommandCenter)(env, secrets, { now }),
+  ]);
+  const contentItems = (content.results || []).map(mapErrorItem);
+  const items = normalizeActionQueue(contentItems, commandCenter);
+  return {
+    generatedAt: new Date(now()).toISOString(),
+    count: items.length,
+    criticalCount: items.filter((item) => item.priority === 'critical').length,
+    items,
+  };
 }
 
 async function listArchive(client, dbId, cursor) {
@@ -280,6 +375,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
       switch (sub) {
         case '/overview': return json(await buildOverview(env, dbId, client, ctx, now));
         case '/command-center': return json(await (deps.commandCenter || buildCommandCenter)(env, secrets, { now }));
+        case '/attention': return json(await listActionQueue(env, secrets, client, dbId, now, deps));
         case '/observability': return json(await (deps.observability || buildObservability)(env, secrets, { now }));
         case '/queue': return json(await listQueue(client, dbId));
         case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor'), {
