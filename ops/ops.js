@@ -185,7 +185,7 @@ if (typeof document !== 'undefined') {
     if (!k) return;
     $('#badge-queue').textContent = k.gate1Backlog ?? 0;
     $('#badge-drafts').textContent = k.gate2Backlog ?? 0;
-    $('#badge-errors').textContent = (k.errorCount ?? 0) + (k.rejectionCount ?? 0);
+    $('#badge-errors').textContent = k.errorCount ?? 0;
   }
 
   // ── dashboard ──────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ if (typeof document !== 'undefined') {
       kpiCard('Gate 2 Backlog', k.gate2Backlog, `oldest ${fmtDuration(k.gate2OldestAgeMs)} · target &lt;8h`),
       kpiCard('Published', k.publishedTotal, `${k.publishedThisMonth} this month`),
       kpiCard('Errors', k.errorCount, `${k.rejectionCount} rejected`),
-      kpiCard('Featured', k.featuredRate == null ? '—' : `${Math.round(k.featuredRate * 100)}%`, `${k.featuredCount ?? '—'} flagged`),
+      kpiCard('Featured', k.featuredRate == null ? '—' : `${Math.round(k.featuredRate * 100)}%`, `${k.featuredCount ?? '—'} published articles`),
     ].join('');
 
     const warn = (o.warnings && o.warnings.length)
