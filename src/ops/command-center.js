@@ -123,10 +123,10 @@ async function readCloudflare(fetchFn, token, accountId) {
   };
 }
 
-async function probe(fetchFn, name, url) {
+async function probe(fetchFn, name, url, headers = {}) {
   const started = Date.now();
   try {
-    const response = await fetchFn(url, { method: 'GET', signal: AbortSignal.timeout(5000) });
+    const response = await fetchFn(url, { method: 'GET', headers, ...(headers.Authorization ? { redirect: 'error' } : {}), signal: AbortSignal.timeout(5000) });
     return { name, url, status: response.ok ? 'ok' : 'degraded', httpStatus: response.status, latencyMs: Date.now() - started };
   } catch (error) {
     return { name, url, status: 'down', httpStatus: null, latencyMs: Date.now() - started, error: error.message };
@@ -152,7 +152,9 @@ export async function buildCommandCenter(env, secrets = {}, deps = {}) {
     settled(() => readCloudflare(fetchFn, cloudflareToken, cloudflareAccountId), { status: 'error' }),
     Promise.all([
       probe(fetchFn, 'Website', 'https://techfusionreport.com/'),
-      probe(fetchFn, 'OmniRoute', 'https://omniroute.techfusionreport.com/v1/models'),
+      probe(fetchFn, 'OmniRoute', 'https://omniroute.techfusionreport.com/v1/models',
+        (secrets.omniroute_api_key || env.OMNIROUTE_API_KEY)
+          ? { Authorization: `Bearer ${secrets.omniroute_api_key || env.OMNIROUTE_API_KEY}` } : {}),
     ]),
   ]);
 
