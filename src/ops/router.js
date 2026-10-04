@@ -247,7 +247,8 @@ async function buildOverview(env, dbId, client, ctx, now) {
   const recentData = await safe('recent published', { results: [] }, () =>
     client.query(dbId, queryBody({ status: S.publishedToGithub, sorts: SORT_PUBLISHED_DESC, pageSize: 5 })));
   const recentPublished = (recentData.results || []).map(mapArchiveItem);
-  const publishedThisMonth = countThisMonth(recentData.results || [], now);
+  const publishedThisMonth = await safe('monthly published count', null, () =>
+    countPublishedThisMonth(client, dbId, now));
 
   const errorsView = await safe('errors', { items: [] }, () => listErrors(client, dbId, 5));
 
@@ -293,17 +294,28 @@ async function buildOverview(env, dbId, client, ctx, now) {
   };
 }
 
-// Count published pages whose Published Date falls in the current month.
-// Input is sorted desc, so we can stop at the first older item.
-function countThisMonth(results, now) {
+// Count the complete UTC calendar month, independently of the recent-items list.
+export async function countPublishedThisMonth(client, dbId, now = Date.now) {
   const d = new Date(now());
-  const firstOfMonth = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  const firstOfMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
+  const nextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString();
   let count = 0;
-  for (const page of results) {
-    const start = page.properties?.[P.publishedDate]?.date?.start;
-    if (!start) continue;
-    if (Date.parse(start) >= firstOfMonth) count++;
-  }
+  let cursor;
+  do {
+    const body = {
+      filter: { and: [
+        { property: P.status, status: { equals: S.publishedToGithub } },
+        { property: P.publishedDate, date: { on_or_after: firstOfMonth } },
+        { property: P.publishedDate, date: { before: nextMonth } },
+      ] },
+      page_size: 100,
+    };
+    if (cursor) body.start_cursor = cursor;
+    const data = await client.query(dbId, body);
+    count += (data.results || []).length;
+    if (data.has_more && !data.next_cursor) throw new Error('Monthly count pagination cursor missing');
+    cursor = data.has_more ? data.next_cursor : null;
+  } while (cursor);
   return count;
 }
 
