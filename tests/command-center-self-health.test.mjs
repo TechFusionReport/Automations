@@ -7,6 +7,27 @@ const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), 
   headers: { 'content-type': 'application/json' },
 });
 
+test('OmniRoute probe authenticates without exposing its credential', async () => {
+  for (const unauthorized of [false, true]) {
+    let checked = false;
+    const result = await buildCommandCenter({}, { omniroute_api_key: 'test-private-key' }, {
+      fetch: async (url, options) => {
+        if (String(url).includes('omniroute.techfusionreport.com')) {
+          checked = true;
+          assert.equal(options.headers.Authorization, 'Bearer test-private-key');
+          assert.equal(options.redirect, 'error');
+          return jsonResponse({}, unauthorized ? 401 : 200);
+        }
+        assert.equal(options.headers?.Authorization, undefined);
+        return jsonResponse({});
+      },
+    });
+    assert.equal(checked, true);
+    assert.equal(result.services.find(s => s.name === 'OmniRoute').status, unauthorized ? 'degraded' : 'ok');
+    assert.equal(JSON.stringify(result).includes('test-private-key'), false);
+  }
+});
+
 test('command center marks current Worker healthy without fetching its own public hostname', async () => {
   const urls = [];
   const fetchFn = async (url) => {

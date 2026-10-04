@@ -272,7 +272,7 @@ async function buildOverview(env, dbId, client, ctx, now) {
       gate1OldestAgeMs: ageMs(gate1Oldest),
       gate2Backlog,
       gate2OldestAgeMs: ageMs(gate2Oldest),
-      errorCount: counts[S.errors] || 0,
+      errorCount: sum([S.errors, S.transcriptionFailed, S.publishFailed, S.needsReReview]),
       rejectionCount: counts[S.rejected] || 0,
       publishedTotal,
       publishedThisMonth,
@@ -312,7 +312,10 @@ async function countFeatured(client, dbId) {
   let count = 0;
   let cursor;
   do {
-    const body = { filter: { property: P.featured, checkbox: { equals: true } }, page_size: 100 };
+    const body = { filter: { and: [
+      { property: P.featured, checkbox: { equals: true } },
+      { property: P.status, status: { equals: S.publishedToGithub } },
+    ] }, page_size: 100 };
     if (cursor) body.start_cursor = cursor;
     const data = await client.query(dbId, body);
     count += (data.results || []).length;
