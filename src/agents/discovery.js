@@ -1,4 +1,7 @@
 // Discovery Agent - TechFusion Report
+// v6.7.0 - Dedupe against Content Catalog v2 (🆔 Video ID) before every create.
+//          KV "seen" keys are now only a fast first-pass filter (365-day TTL);
+//          their 30-day expiry was re-adding old videos every month.
 // v6.6.0 - Content Creator DB is the source of truth for Category/Subcategory.
 //          New Catalog records inherit those values before they are created.
 //          Also fixes exact Catalog property keys for Featured and Source.
@@ -380,7 +383,8 @@ class DiscoveryAgent {
       const score = await this.scoreContent(item.title, item.description, channel.category, config);
 
       if (score > channel.minScore) {
-        await this.writeToNotion({
+        // writeToNotion returns null when the video is already in the catalog.
+        const page = await this.writeToNotion({
           id: videoId,
           title: item.title,
           description: (item.description || '').replace(/<[^>]+>/g, '').slice(0, 500),
@@ -391,15 +395,17 @@ class DiscoveryAgent {
           score,
           sourceType: 'YouTube'
         }, channel, config);
-        approved++;
+        if (page) approved++;
       }
 
       // Diagnosis: marking KV before Notion success caused schema failures to
       // suppress the same item for 30 days. Only mark seen after success or a
-      // deliberate low-score rejection.
+      // deliberate low-score rejection. (If writeToNotion throws, including a
+      // failed dedupe lookup, we never reach this line and the item is retried.)
+      // TTL is 365 days: this is only a fast filter, Notion is the real guard.
       await this.env.CONTENT_KV.put(kvKey, JSON.stringify({
         title: item.title, channel: channel.name, score, processedAt: Date.now()
-      }), { expirationTtl: 2592000 });
+      }), { expirationTtl: 31536000 });
       processed++;
     }
 
@@ -438,7 +444,8 @@ class DiscoveryAgent {
         const thumbnail = (item.description?.match(/<img[^>]+src=["']([^"']+)["']/i) || [])[1]
           || 'https://techfusionreport.github.io/graphics/tech_nb.png';
 
-        await this.writeToNotion({
+        // writeToNotion returns null when the item is already in the catalog.
+        const page = await this.writeToNotion({
           id: key.replace('rss:', ''),
           title: item.title,
           description: (item.description || '').replace(/<[^>]+>/g, '').slice(0, 500),
@@ -449,15 +456,16 @@ class DiscoveryAgent {
           score,
           sourceType: 'RSS'
         }, channel, config);
-        approved++;
+        if (page) approved++;
       }
 
       // Diagnosis: KV dedup was written before the Notion create call. If
       // XtreamDroid hit a Catalog v2 schema mismatch, every item looked
-      // already-seen on future runs until the 30-day TTL expired.
+      // already-seen on future runs until the TTL expired.
+      // TTL is 365 days: this is only a fast filter, Notion is the real guard.
       await this.env.CONTENT_KV.put(key, JSON.stringify({
         title: item.title, score, processedAt: Date.now()
-      }), { expirationTtl: 2592000 });
+      }), { expirationTtl: 31536000 });
       processed++;
     }
     return { processed, approved };
@@ -488,7 +496,8 @@ class DiscoveryAgent {
           featured: false,
           minScore: 65
         };
-        await this.writeToNotion({
+        // writeToNotion returns null when the story is already in the catalog.
+        const page = await this.writeToNotion({
           id: `hn-${story.id}`,
           title: story.title,
           description: `HN Score: ${story.score} | ${story.descendants || 0} comments`,
@@ -499,7 +508,7 @@ class DiscoveryAgent {
           score,
           sourceType: 'HackerNews'
         }, channel, config);
-        approved++;
+        if (page) approved++;
       }
 
       await this.env.CONTENT_KV.put(key, JSON.stringify({
@@ -567,8 +576,44 @@ class DiscoveryAgent {
     ];
   }
 
+  // Notion is the source of truth for "have we already added this video?".
+  // KV can expire or be cleared; the catalog row cannot.
+  // Works for every source because writeToNotion stores video.id in
+  // 🆔 Video ID for YouTube (videoId), RSS (hashed key) and HN ("hn-<id>").
+  async existsInCatalog(videoId, config) {
+    const dbId = config.notion_database_id || '1fbbd080-de92-8043-89aa-dc02853c15c7';
+    const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.notion_token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({
+        filter: { property: '🆔 Video ID', rich_text: { equals: String(videoId) } },
+        page_size: 1
+      })
+    });
+
+    // Fail CLOSED. If the lookup errors (429, 5xx), throw so the caller skips
+    // the create and does NOT write the KV "seen" key. The item is simply
+    // retried on the next run. (The old n8n scanner failed open: an error
+    // looked like "no duplicate" and it created the row anyway.)
+    if (!res.ok) throw new Error(`Catalog dedupe lookup failed (${res.status}): ${await res.text()}`);
+
+    const data = await res.json();
+    return Array.isArray(data.results) && data.results.length > 0;
+  }
+
   // Write to Notion
+  // Returns the created page, or null if the video is already in the catalog.
   async writeToNotion(video, channel, config) {
+    // Last line of defence: never create a second row for the same Video ID.
+    if (await this.existsInCatalog(video.id, config)) {
+      console.log(`Skipping duplicate (already in catalog): ${video.title} [${video.id}]`);
+      return null;
+    }
+
     const creators  = await this.loadCreatorCache(config);
     // Diagnosis: RSS channels use the Creator DB page id as channel.notionPageId,
     // while YouTube channels use UC... ids. Check both so RSS records keep the
