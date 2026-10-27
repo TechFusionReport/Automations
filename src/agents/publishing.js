@@ -151,9 +151,12 @@ export class PublishingAgent {
     const newSlug = `${metadata.date}-${metadata.slug}`;
     posts = posts.filter(p => p.slug !== newSlug);
     posts.unshift({
-      title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
-      category: metadata.category || 'Technology', excerpt: metadata.description || '',
-      url: `/_posts/${newSlug}.html`
+      title: metadata.title, slug: newSlug, date: metadata.date,
+      category: metadata.category, subcategory: metadata.subcategory,
+      readTime: `${this.estimateReadingTime(metadata.content || '')} min read`,
+      excerpt: metadata.description || '', thumbnail: metadata.image || '', image: metadata.image || '',
+      url: `/_posts/${newSlug}.html`, feature: Boolean(metadata.featured),
+      file: metadata.path, tags: metadata.tags || []
     });
     await this.commitFileToBranch('posts.json', JSON.stringify(posts, null, 2),
       `Update posts.json: add ${metadata.title}`, branch, secrets);
@@ -215,6 +218,8 @@ export class PublishingAgent {
     content,
     category,
     section,
+    subcategory,
+    image = null,
     tags,
     featured = false,
     seoTitle = null,
@@ -231,7 +236,7 @@ export class PublishingAgent {
     const date = new Date().toISOString().split('T')[0];
     const slug = this.sanitizeSlug(seoSlug) || this.createSlug(title);
     const path = `_posts/${date}-${slug}.html`;
-    const canonicalUrl = `https://techfusionreport.com/${path}`;
+    const canonicalUrl = `https://www.techfusionreport.com/${path}`;
 
     const metadata = {
       title,
@@ -241,8 +246,11 @@ export class PublishingAgent {
       slug,
       path,
       canonicalUrl,
-      category: category || 'General',
-      section: section || 'Technology',
+      category: category || 'Technology',
+      subcategory: subcategory || section || '',
+      section: subcategory || section || '',
+      image,
+      content,
       tags: tags || [],
       notionPageId,
       featured,
@@ -256,7 +264,8 @@ export class PublishingAgent {
 
     const contentWithAffiliates = this.affiliateInserter.insert(content);
     metadata.relatedArticles = await this.findRelatedArticles(metadata);
-    const html = this.convertToHTML(contentWithAffiliates, metadata);
+    const template = await this.fetchWebsiteTemplate(secrets);
+    const html = this.convertToHTML(contentWithAffiliates, metadata, template);
 
     const branch = `publish/${notionPageId}-${slug}`;
     await this.ensureBranch(branch, secrets);
@@ -301,7 +310,7 @@ export class PublishingAgent {
 
         let score = 0;
         if (article.category === metadata.category) score += 4;
-        if (article.section === metadata.section) score += 2;
+        if ((article.subcategory || article.section) === metadata.subcategory) score += 2;
         const overlap = (article.tags || []).filter(tag => metadata.tags.includes(tag)).length;
         score += overlap * 2;
         if (metadata.focusKeyword && String(article.focusKeyword || '').toLowerCase() === String(metadata.focusKeyword).toLowerCase()) score += 3;
@@ -314,7 +323,7 @@ export class PublishingAgent {
         .slice(0, 4)
         .map(article => ({
           title: article.title,
-          url: article.canonicalUrl || `https://techfusionreport.com/_posts/${article.date}-${article.slug}.html`
+          url: article.canonicalUrl || `https://www.techfusionreport.com/_posts/${article.date}-${article.slug}.html`
         }));
     } catch (e) {
       console.warn('Related article lookup failed:', e.message);
@@ -351,69 +360,84 @@ export class PublishingAgent {
     });
   }
 
-  convertToHTML(content, metadata) {
+  async fetchWebsiteTemplate(secrets) {
+    const response = await fetch('https://api.github.com/repos/TechFusionReport/Website/contents/blog-post-template.html?ref=main', {
+      headers: this.githubHeaders(secrets.github_pat)
+    });
+    if (!response.ok) throw new Error(`Website template fetch failed (HTTP ${response.status})`);
+    const data = await response.json();
+    if (data.encoding !== 'base64' || !data.content) throw new Error('Invalid Website template response');
+    return decodeURIComponent(escape(atob(data.content.replace(/\\s/g, ''))));
+  }
+
+  convertToHTML(content, metadata, template) {
+    if (!template || !template.includes('{{BODY_HTML}}')) throw new Error('Canonical Website template required');
+    const category = String(metadata.category || '').trim();
+    const categorySlug = category.toLowerCase();
+    if (!['technology', 'entertainment', 'productivity'].includes(categorySlug)) {
+      throw new Error(`Invalid Website category: ${category}`);
+    }
+    const date = metadata.date;
+    const datedSlug = `${date}-${metadata.slug}`;
     const articleHtml = this.normalizeArticleHtml(content, metadata);
-    const toc = this.generateTOC(articleHtml);
-    const internalLinks = this.renderInternalLinks(metadata);
-    const schema = this.resolveSchema(metadata);
-    const seoTitle = this.escapeHtml(metadata.seoTitle || metadata.title);
-    const description = this.escapeHtml(metadata.description || '');
-    const title = this.escapeHtml(metadata.title);
-    const category = this.escapeHtml(metadata.category);
-    const section = this.escapeHtml(metadata.section);
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${seoTitle}</title>
-  <meta name="description" content="${description}">
-  <meta property="og:title" content="${seoTitle}">
-  <meta property="og:description" content="${description}">
-  <meta property="og:type" content="article">
-  <meta property="og:url" content="${this.escapeHtml(metadata.canonicalUrl)}">
-  <meta property="article:section" content="${category}">
-  <meta property="article:tag" content="${this.escapeHtml(metadata.tags.join(','))}">
-  <meta property="article:published_time" content="${metadata.date}">
-  ${metadata.focusKeyword ? `<meta name="keywords" content="${this.escapeHtml(metadata.focusKeyword)}">` : ''}
-  <script type="application/ld+json">${JSON.stringify(schema)}</script>
-  <link rel="stylesheet" href="/assets/style.css">
-  <link rel="canonical" href="${this.escapeHtml(metadata.canonicalUrl)}">
-</head>
-<body>
-  <article data-category="${category}" data-section="${section}" data-slug="${this.escapeHtml(metadata.slug)}">
-    <header>
-      <nav class="breadcrumb">
-        <a href="/">Home</a> /
-        <a href="/${this.createSlug(metadata.section)}">${section}</a> /
-        <a href="/${this.createSlug(metadata.section)}/${this.createSlug(metadata.category)}">${category}</a>
-      </nav>
-      <span class="category-badge">${category}</span>
-      ${metadata.featured ? '<span class="featured-badge">Featured</span>' : ''}
-      <h1 id="ab-headline">${title}</h1>
-      <div class="tags">
-        ${metadata.tags.map(tag => `<span class="tag"><a href="/tag/${this.createSlug(tag)}">${this.escapeHtml(tag)}</a></span>`).join('')}
-      </div>
-      <time datetime="${metadata.date}">${new Date(metadata.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</time>
-      <div class="reading-time">${this.estimateReadingTime(articleHtml)} min read</div>
-    </header>
-
-    <div class="content-wrapper">
-      ${toc ? `<aside class="toc"><h3>Table of Contents</h3>${toc}</aside>` : ''}
-      <div class="content">
-        <div class="tldr"><strong>TL;DR:</strong> ${this.escapeHtml(this.generateTLDR(articleHtml))}</div>
-        ${articleHtml}
-        ${internalLinks}
-        <div class="newsletter-cta">
-          <h3>Enjoyed this article?</h3>
-          <p>Subscribe to TechFusion Report for weekly tech insights.</p>
-        </div>
-      </div>
-    </div>
-  </article>
-</body>
-</html>`;
+    const image = String(metadata.image || '').trim();
+    if (image && !/^(https?:\\/\\/|\\/)[^\\s"'<>]+$/i.test(image)) throw new Error('Invalid article image URL');
+    const related = (metadata.relatedArticles || []).map(item =>
+      `<a class="post-card" href="${this.escapeHtml(item.url)}"><h3>${this.escapeHtml(item.title)}</h3></a>`
+    ).join('\\n');
+    const schema = this.resolveSchema({ ...metadata, canonicalUrl: `https://www.techfusionreport.com/_posts/${datedSlug}.html` });
+    schema['@context'] = 'https://schema.org';
+    schema['@type'] = 'BlogPosting';
+    schema.headline = metadata.title;
+    schema.description = metadata.description || '';
+    schema.datePublished = date;
+    schema.dateModified = metadata.updatedDate || date;
+    schema.articleSection = category;
+    schema.keywords = (metadata.tags || []).join(', ');
+    schema.mainEntityOfPage = `https://www.techfusionreport.com/_posts/${datedSlug}.html`;
+    schema.author = metadata.defaultAuthor
+      ? { '@type': 'Person', name: metadata.defaultAuthor }
+      : { '@type': 'Organization', name: 'TechFusion Report' };
+    schema.publisher = { '@type': 'Organization', name: 'TechFusion Report',
+      logo: { '@type': 'ImageObject', url: 'https://www.techfusionreport.com/graphics/tfr-logo-clean_transparent.png' } };
+    if (image) schema.image = image;
+    else delete schema.image;
+    const jsonLd = JSON.stringify(schema).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+    let html = template.replace(/<script type="application\\/ld\\+json">[\\s\\S]*?<\\/script>/i,
+      `<script type="application/ld+json">${jsonLd}</script>`);
+    if (!image) {
+      html = html.replace(/^\\s*<meta (?:property="og:image"|name="twitter:image")[^>]*>\\s*$/gm, '');
+      html = html.replace(/\\s*<figure class="article-hero-media">[\\s\\S]*?<\\/figure>/, '');
+    }
+    if (!metadata.inlineImage) html = html.replace(/\\s*<figure class="article-inline-art">[\\s\\S]*?<\\/figure>/, '');
+    if (!metadata.bodyContinuedHtml) html = html.replace(/\\s*<section class="article-body article-content">\\s*{{BODY_CONTINUED_HTML}}\\s*<\\/section>/, '');
+    html = html.replace('<article class="article-shell article-template-shell">',
+      `<article class="article-shell article-template-shell" data-category="${this.escapeHtml(category)}" data-section="${this.escapeHtml(metadata.subcategory || '')}">`);
+    const displayDate = new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC'
+    });
+    const fields = {
+      TITLE: metadata.title, META_DESCRIPTION: metadata.description || '', SLUG: datedSlug,
+      IMAGE: image, IMAGE_ALT: metadata.imageAltText || metadata.title,
+      IMAGE_CAPTION: metadata.imageCaption || '', CATEGORY: category, CATEGORY_SLUG: categorySlug,
+      SUBCATEGORY: metadata.subcategory || '', TAGS: (metadata.tags || []).join(', '),
+      DATE: date, UPDATED_DATE: metadata.updatedDate || date, DISPLAY_DATE: displayDate,
+      READ_TIME: `${this.estimateReadingTime(articleHtml)} min read`,
+      AUTHOR: metadata.defaultAuthor || 'TechFusion Report', DEK: metadata.dek || metadata.description || '',
+      TLDR: this.generateTLDR(articleHtml), BODY_HTML: articleHtml,
+      INLINE_IMAGE: metadata.inlineImage || '', INLINE_IMAGE_ALT: metadata.inlineImageAlt || '',
+      INLINE_IMAGE_CAPTION: metadata.inlineImageCaption || '',
+      BODY_CONTINUED_HTML: metadata.bodyContinuedHtml || '',
+      CATEGORY_DESCRIPTION: metadata.categoryDescription || `More stories from ${category}.`,
+      RELATED_ARTICLES: related
+    };
+    html = html.replace(/{{([A-Z_]+)}}/g, (whole, key) => {
+      if (!(key in fields)) throw new Error(`Unknown Website template placeholder: ${key}`);
+      return key === 'BODY_HTML' || key === 'BODY_CONTINUED_HTML' || key === 'RELATED_ARTICLES'
+        ? fields[key] : this.escapeHtml(fields[key]);
+    });
+    if (/{{[^}]+}}/.test(html)) throw new Error('Unresolved Website template placeholders');
+    return html;
   }
 
   generateMetaDescription(content) {
