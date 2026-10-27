@@ -402,7 +402,7 @@ export class PublishingAgent {
       logo: { '@type': 'ImageObject', url: 'https://www.techfusionreport.com/graphics/tfr-logo-clean_transparent.png' } };
     if (image) schema.image = image;
     else delete schema.image;
-    const jsonLd = JSON.stringify(schema).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+    const jsonLd = JSON.stringify(schema).replace(/[<>&]/g, ch => String.fromCharCode(92) + ({ '<': 'u003c', '>': 'u003e', '&': 'u0026' })[ch]);
     let html = template.replace(/<script type="application\\/ld\\+json">[\\s\\S]*?<\\/script>/i,
       `<script type="application/ld+json">${jsonLd}</script>`);
     if (!image) {
