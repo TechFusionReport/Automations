@@ -246,7 +246,7 @@ export class PublishingAgent {
       slug,
       path,
       canonicalUrl,
-      category: category || 'Technology',
+      category,
       subcategory: subcategory || section || '',
       section: subcategory || section || '',
       image,
@@ -386,6 +386,12 @@ export class PublishingAgent {
     if (!['technology', 'entertainment', 'productivity'].includes(categorySlug)) {
       throw new Error(`Invalid Website category: ${category}`);
     }
+    const replaceRequired = (source, pattern, replacement, label) => {
+      if (typeof pattern === 'string' ? !source.includes(pattern) : !pattern.test(source)) {
+        throw new Error('Website template missing required element: ' + label);
+      }
+      return source.replace(pattern, replacement);
+    };
     const date = metadata.date;
     const datedSlug = `${date}-${metadata.slug}`;
     const articleHtml = this.normalizeArticleHtml(content, metadata);
@@ -412,16 +418,16 @@ export class PublishingAgent {
     if (image) schema.image = image;
     else delete schema.image;
     const jsonLd = JSON.stringify(schema).replace(/[<>&]/g, ch => String.fromCharCode(92) + ({ '<': 'u003c', '>': 'u003e', '&': 'u0026' })[ch]);
-    let html = template.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/i,
-      `<script type="application/ld+json">${jsonLd}</script>`);
+    let html = replaceRequired(template, /<script type="application\/ld\+json">[\s\S]*?<\/script>/i,
+      `<script type="application/ld+json">${jsonLd}</script>`, 'JSON-LD script');
     if (!image) {
       html = html.replace(/^\s*<meta (?:property="og:image"|name="twitter:image")[^>]*>\s*$/gm, '');
-      html = html.replace(/\s*<figure class="article-hero-media">[\s\S]*?<\/figure>/, '');
+      html = replaceRequired(html, /\s*<figure class="article-hero-media">[\s\S]*?<\/figure>/, '', 'hero figure');
     }
-    if (!metadata.inlineImage) html = html.replace(/\s*<figure class="article-inline-art">[\s\S]*?<\/figure>/, '');
-    if (!metadata.bodyContinuedHtml) html = html.replace(/\s*<section class="article-body article-content">\s*{{BODY_CONTINUED_HTML}}\s*<\/section>/, '');
-    html = html.replace('<article class="article-shell article-template-shell">',
-      `<article class="article-shell article-template-shell" data-category="${this.escapeHtml(category)}" data-section="${this.escapeHtml(metadata.subcategory || '')}">`);
+    if (!metadata.inlineImage) html = replaceRequired(html, /\s*<figure class="article-inline-art">[\s\S]*?<\/figure>/, '', 'inline art figure');
+    if (!metadata.bodyContinuedHtml) html = replaceRequired(html, /\s*<section class="article-body article-content">\s*{{BODY_CONTINUED_HTML}}\s*<\/section>/, '', 'continued body section');
+    html = replaceRequired(html, '<article class="article-shell article-template-shell">',
+      `<article class="article-shell article-template-shell" data-category="${this.escapeHtml(category)}" data-section="${this.escapeHtml(metadata.subcategory || '')}">`, 'article shell');
     const displayDate = new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', {
       month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC'
     });
@@ -440,6 +446,10 @@ export class PublishingAgent {
       CATEGORY_DESCRIPTION: metadata.categoryDescription || `More stories from ${category}.`,
       RELATED_ARTICLES: related
     };
+    // Validate template tokens before inserting user-authored article content.
+    if (/{{[^}]+}}/.test(html.replace(/{{[A-Z_]+}}/g, ''))) {
+      throw new Error('Unresolved Website template placeholders');
+    }
     html = html.replace(/{{([A-Z_]+)}}/g, (whole, key) => {
       if (!(key in fields)) throw new Error(`Unknown Website template placeholder: ${key}`);
       return key === 'BODY_HTML' || key === 'BODY_CONTINUED_HTML' || key === 'RELATED_ARTICLES'
@@ -449,7 +459,7 @@ export class PublishingAgent {
     // Escape query separators in that attribute so emitted article HTML is HTML5-valid.
     html = html.replace(/<link\b[^>]*href="https:\/\/fonts\.googleapis\.com\/[^"]*"[^>]*>/gi,
       tag => tag.replace(/&(?!(?:amp|quot|lt|gt|#\d+|#x[0-9a-f]+);)/gi, '&amp;'));
-    if (/{{[^}]+}}/.test(html)) throw new Error('Unresolved Website template placeholders');
+
     return html;
   }
 
