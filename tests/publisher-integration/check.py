@@ -53,7 +53,7 @@ def validate(root):
         assert not re.search(r"\{\{[^}]+\}\}", html), filename + ": unresolved template placeholder"
         parser = html5lib.HTMLParser(strict=False)
         parser.parse(html)
-        assert not parser.errors, f"{filename}: HTML5 validation errors: {parser.errors[:5]}"
+        assert not parser.errors, f"{filename}: HTML5 validation errors: {[(error, html.splitlines()[error[0][0]-1]) for error in parser.errors[:5]]}"
         assert "<script>alert(1)</script>" not in html, filename + ": raw script injected"
         assert expected["sitemapUrl"] in urls, filename + ": missing expected sitemap URL"
         assert f'href="{expected["sitemapUrl"]}"' in html, filename + ": incorrect canonical"
