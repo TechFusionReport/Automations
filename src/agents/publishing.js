@@ -445,6 +445,10 @@ export class PublishingAgent {
       return key === 'BODY_HTML' || key === 'BODY_CONTINUED_HTML' || key === 'RELATED_ARTICLES'
         ? fields[key] : this.escapeHtml(fields[key]);
     });
+    // The canonical template contains unescaped ampersands in its Google Fonts URL.
+    // Escape query separators in that attribute so emitted article HTML is HTML5-valid.
+    html = html.replace(/<link\b[^>]*href="https:\/\/fonts\.googleapis\.com\/[^"]*"[^>]*>/gi,
+      tag => tag.replace(/&(?!(?:amp|quot|lt|gt|#\d+|#x[0-9a-f]+);)/gi, '&amp;'));
     if (/{{[^}]+}}/.test(html)) throw new Error('Unresolved Website template placeholders');
     return html;
   }
