@@ -52,7 +52,7 @@ def validate(root):
         html = (root / "_posts" / filename).read_text()
         assert not re.search(r"\\{\\{(?:TITLE|META_DESCRIPTION|BODY_HTML|RELATED_ARTICLES|SLUG|CATEGORY)\\}\\}", html), filename + ": unresolved template token"
         if not expected["subcategory"]:
-            assert "{{CODE_SAMPLE}}" in html, filename + ": legitimate article braces were removed
+            assert "{{CODE_SAMPLE}}" in html, filename + ": legitimate article braces were removed"
         parser = html5lib.HTMLParser(strict=False)
         parser.parse(html)
         assert not parser.errors, f"{filename}: HTML5 validation errors: {[(error, html.splitlines()[error[0][0]-1]) for error in parser.errors[:5]]}"
