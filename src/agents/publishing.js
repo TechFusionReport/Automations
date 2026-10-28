@@ -319,7 +319,7 @@ export class PublishingAgent {
       }
 
       return candidates
-        .sort((a, b) => b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
+        .sort((a, b) => Number(b.category === metadata.category) - Number(a.category === metadata.category) || b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
         .slice(0, 4)
         .map(article => ({
           title: article.title,
@@ -332,30 +332,39 @@ export class PublishingAgent {
   }
 
   normalizeArticleHtml(content, metadata) {
-    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\b/i.test(content);
+    const source = String(content || '');
+    // Preserve the existing trusted article HTML produced by enhancement, but
+    // remove executable markup and event-handler attributes before insertion.
+    const cleanHtml = value => value
+      .replace(/<\\s*(script|style|iframe|object|embed|form|svg|math)\\b[^>]*>[\\s\\S]*?<\\/\\s*\\1\\s*>/gi, '')
+      .replace(/<\\s*(script|style|iframe|object|embed|form|svg|math)\\b[^>]*\\/?>/gi, '')
+      .replace(/\\s+on[a-z]+\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s>]+)/gi, '')
+      .replace(/\\s+(href|src)\\s*=\\s*(["'])\\s*(?:javascript|data|vbscript):[^"']*\\2/gi, '');
+    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\\b/i.test(source);
     let html;
-
     if (looksLikeHtml) {
-      html = content;
+      html = cleanHtml(source);
     } else {
-      html = content
-        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" class="external">$1</a>')
-        .replace(/```([\s\S]*?)```/gim, '<pre><code>$1</code></pre>')
-        .replace(/`([^`]+)`/gim, '<code>$1</code>')
-        .replace(/\n\n/g, '</p><p>');
-      html = `<p>${html}</p>`;
+      const blocks = source.split(/\\n\\s*\\n/).map(block => {
+        const safe = this.escapeHtml(block.trim());
+        if (!safe) return '';
+        const inline = value => value
+          .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
+          .replace(/\\*(.+?)\\*/g, '<em>$1</em>')
+          .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>');
+        const heading = safe.match(/^(#{1,3})\\s+([\\s\\S]*)$/);
+        if (heading) {
+          const level = Math.max(2, heading[1].length);
+          return `<h${level}>${inline(heading[2])}</h${level}>`;
+        }
+        return `<p>${inline(safe).replace(/\\n/g, ' ')}</p>`;
+      });
+      html = blocks.filter(Boolean).join('\\n');
     }
-
-    html = html.replace(/\[SPONSOR\]/gim, this.getSponsorBanner(metadata.category));
-
-    return html.replace(/<h2(?![^>]*\bid=)([^>]*)>([\s\S]*?)<\/h2>/gi, (match, attrs, inner) => {
-      const label = this.stripHtml(inner);
-      const id = this.createSlug(label) || `section-${Math.random().toString(36).slice(2, 8)}`;
+    html = html.replace(/\\[SPONSOR\\]/gi, this.getSponsorBanner(metadata.category));
+    return html.replace(/<h2(?![^>]*\\bid=)([^>]*)>([\\s\\S]*?)<\\/h2>/gi, (match, attrs, inner) => {
+      const id = this.createSlug(this.stripHtml(inner)) || 'article-section';
       return `<h2 id="${id}"${attrs}>${inner}</h2>`;
     });
   }
