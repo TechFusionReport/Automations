@@ -156,7 +156,7 @@ export class PublishingAgent {
       readTime: `${this.estimateReadingTime(metadata.content || '')} min read`,
       excerpt: metadata.description || '', thumbnail: metadata.image || '', image: metadata.image || '',
       url: `/_posts/${newSlug}.html`, feature: Boolean(metadata.featured),
-      file: metadata.path, tags: metadata.tags || []
+      file: `${newSlug}.html`, tags: metadata.tags || []
     });
     await this.commitFileToBranch('posts.json', JSON.stringify(posts, null, 2),
       `Update posts.json: add ${metadata.title}`, branch, secrets);
