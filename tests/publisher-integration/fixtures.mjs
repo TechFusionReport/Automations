@@ -49,3 +49,30 @@ for (const [name, test] of [
   if (!rejected) throw new Error('Negative fixture unexpectedly passed: ' + name);
 }
 console.log('Publisher negative fixtures rejected as expected');
+
+const originalFetch = globalThis.fetch;
+const originalCommit = publisher.commitFileToBranch;
+try {
+  globalThis.fetch = async () => ({ ok: false, status: 404 });
+  let captured = null;
+  publisher.commitFileToBranch = async (file, content) => { captured = { file, posts: JSON.parse(content) }; };
+  for (const fixture of fixtures) {
+    await publisher.updatePostsJsonOnBranch({
+      title: fixture.title, slug: fixture.slug, date: fixture.filename.slice(0, 10),
+      category: fixture.category, subcategory: fixture.subcategory, image: fixture.image,
+      description: 'Fixture article to validate the Website publishing contract.',
+      path: '_posts/' + fixture.filename, tags: ['Integration', 'Test']
+    }, 'test-only', { github_pat: 'fake-test-token' });
+    if (captured?.file !== 'posts.json') throw new Error('Publisher did not write posts.json');
+    const post = captured.posts[0];
+    if (post.file !== fixture.filename || post.url !== '/_posts/' + fixture.filename ||
+        post.category !== fixture.category || post.subcategory !== fixture.subcategory ||
+        post.title !== fixture.title) {
+      throw new Error('Publisher posts.json writer violates Website contract: ' + JSON.stringify(post));
+    }
+  }
+} finally {
+  globalThis.fetch = originalFetch;
+  publisher.commitFileToBranch = originalCommit;
+}
+console.log('Publisher posts.json writer shape verified without network or commits');
