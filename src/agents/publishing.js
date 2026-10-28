@@ -336,34 +336,34 @@ export class PublishingAgent {
     // Preserve the existing trusted article HTML produced by enhancement, but
     // remove executable markup and event-handler attributes before insertion.
     const cleanHtml = value => value
-      .replace(/<\\s*(script|style|iframe|object|embed|form|svg|math)\\b[^>]*>[\\s\\S]*?<\\/\\s*\\1\\s*>/gi, '')
-      .replace(/<\\s*(script|style|iframe|object|embed|form|svg|math)\\b[^>]*\\/?>/gi, '')
-      .replace(/\\s+on[a-z]+\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s>]+)/gi, '')
-      .replace(/\\s+(href|src)\\s*=\\s*(["'])\\s*(?:javascript|data|vbscript):[^"']*\\2/gi, '');
-    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\\b/i.test(source);
+      .replace(/<\s*(script|style|iframe|object|embed|form|svg|math)\b[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '')
+      .replace(/<\s*(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi, '')
+      .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\s+(href|src)\s*=\s*(["'])\s*(?:javascript|data|vbscript):[^"']*\2/gi, '');
+    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\b/i.test(source);
     let html;
     if (looksLikeHtml) {
       html = cleanHtml(source);
     } else {
-      const blocks = source.split(/\\n\\s*\\n/).map(block => {
+      const blocks = source.split(/\n\s*\n/).map(block => {
         const safe = this.escapeHtml(block.trim());
         if (!safe) return '';
         const inline = value => value
-          .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
-          .replace(/\\*(.+?)\\*/g, '<em>$1</em>')
-          .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
           .replace(/`([^`]+)`/g, '<code>$1</code>');
-        const heading = safe.match(/^(#{1,3})\\s+([\\s\\S]*)$/);
+        const heading = safe.match(/^(#{1,3})\s+([\s\S]*)$/);
         if (heading) {
           const level = Math.max(2, heading[1].length);
           return `<h${level}>${inline(heading[2])}</h${level}>`;
         }
-        return `<p>${inline(safe).replace(/\\n/g, ' ')}</p>`;
+        return `<p>${inline(safe).replace(/\n/g, ' ')}</p>`;
       });
-      html = blocks.filter(Boolean).join('\\n');
+      html = blocks.filter(Boolean).join('\n');
     }
-    html = html.replace(/\\[SPONSOR\\]/gi, this.getSponsorBanner(metadata.category));
-    return html.replace(/<h2(?![^>]*\\bid=)([^>]*)>([\\s\\S]*?)<\\/h2>/gi, (match, attrs, inner) => {
+    html = html.replace(/\[SPONSOR\]/gi, this.getSponsorBanner(metadata.category));
+    return html.replace(/<h2(?![^>]*\bid=)([^>]*)>([\s\S]*?)<\/h2>/gi, (match, attrs, inner) => {
       const id = this.createSlug(this.stripHtml(inner)) || 'article-section';
       return `<h2 id="${id}"${attrs}>${inner}</h2>`;
     });
@@ -376,7 +376,7 @@ export class PublishingAgent {
     if (!response.ok) throw new Error(`Website template fetch failed (HTTP ${response.status})`);
     const data = await response.json();
     if (data.encoding !== 'base64' || !data.content) throw new Error('Invalid Website template response');
-    return decodeURIComponent(escape(atob(data.content.replace(/\\s/g, ''))));
+    return decodeURIComponent(escape(atob(data.content.replace(/\s/g, ''))));
   }
 
   convertToHTML(content, metadata, template) {
@@ -390,10 +390,10 @@ export class PublishingAgent {
     const datedSlug = `${date}-${metadata.slug}`;
     const articleHtml = this.normalizeArticleHtml(content, metadata);
     const image = String(metadata.image || '').trim();
-    if (image && !/^(https?:\\/\\/|\\/)[^\\s"'<>]+$/i.test(image)) throw new Error('Invalid article image URL');
+    if (image && !/^(https?:\/\/|\/)[^\s"'<>]+$/i.test(image)) throw new Error('Invalid article image URL');
     const related = (metadata.relatedArticles || []).map(item =>
       `<a class="post-card" href="${this.escapeHtml(item.url)}"><h3>${this.escapeHtml(item.title)}</h3></a>`
-    ).join('\\n');
+    ).join('\n');
     const schema = this.resolveSchema({ ...metadata, canonicalUrl: `https://www.techfusionreport.com/_posts/${datedSlug}.html` });
     schema['@context'] = 'https://schema.org';
     schema['@type'] = 'BlogPosting';
@@ -412,14 +412,14 @@ export class PublishingAgent {
     if (image) schema.image = image;
     else delete schema.image;
     const jsonLd = JSON.stringify(schema).replace(/[<>&]/g, ch => String.fromCharCode(92) + ({ '<': 'u003c', '>': 'u003e', '&': 'u0026' })[ch]);
-    let html = template.replace(/<script type="application\\/ld\\+json">[\\s\\S]*?<\\/script>/i,
+    let html = template.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/i,
       `<script type="application/ld+json">${jsonLd}</script>`);
     if (!image) {
-      html = html.replace(/^\\s*<meta (?:property="og:image"|name="twitter:image")[^>]*>\\s*$/gm, '');
-      html = html.replace(/\\s*<figure class="article-hero-media">[\\s\\S]*?<\\/figure>/, '');
+      html = html.replace(/^\s*<meta (?:property="og:image"|name="twitter:image")[^>]*>\s*$/gm, '');
+      html = html.replace(/\s*<figure class="article-hero-media">[\s\S]*?<\/figure>/, '');
     }
-    if (!metadata.inlineImage) html = html.replace(/\\s*<figure class="article-inline-art">[\\s\\S]*?<\\/figure>/, '');
-    if (!metadata.bodyContinuedHtml) html = html.replace(/\\s*<section class="article-body article-content">\\s*{{BODY_CONTINUED_HTML}}\\s*<\\/section>/, '');
+    if (!metadata.inlineImage) html = html.replace(/\s*<figure class="article-inline-art">[\s\S]*?<\/figure>/, '');
+    if (!metadata.bodyContinuedHtml) html = html.replace(/\s*<section class="article-body article-content">\s*{{BODY_CONTINUED_HTML}}\s*<\/section>/, '');
     html = html.replace('<article class="article-shell article-template-shell">',
       `<article class="article-shell article-template-shell" data-category="${this.escapeHtml(category)}" data-section="${this.escapeHtml(metadata.subcategory || '')}">`);
     const displayDate = new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', {
