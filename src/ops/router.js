@@ -15,6 +15,7 @@ import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-c
 import { EnhancementOrchestrator } from '../agents/enhancement.js';
 import { buildCommandCenter } from './command-center.js';
 import { buildObservability } from './observability.js';
+import { buildLegacyMonitoring, ingestMonitoring } from './legacy-monitoring.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -247,7 +248,8 @@ async function buildOverview(env, dbId, client, ctx, now) {
   const recentData = await safe('recent published', { results: [] }, () =>
     client.query(dbId, queryBody({ status: S.publishedToGithub, sorts: SORT_PUBLISHED_DESC, pageSize: 5 })));
   const recentPublished = (recentData.results || []).map(mapArchiveItem);
-  const publishedThisMonth = countThisMonth(recentData.results || [], now);
+  const publishedThisMonth = await safe('monthly published count', null, () =>
+    countPublishedThisMonth(client, dbId, now));
 
   const errorsView = await safe('errors', { items: [] }, () => listErrors(client, dbId, 5));
 
@@ -293,17 +295,28 @@ async function buildOverview(env, dbId, client, ctx, now) {
   };
 }
 
-// Count published pages whose Published Date falls in the current month.
-// Input is sorted desc, so we can stop at the first older item.
-function countThisMonth(results, now) {
+// Count the complete UTC calendar month, independently of the recent-items list.
+export async function countPublishedThisMonth(client, dbId, now = Date.now) {
   const d = new Date(now());
-  const firstOfMonth = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  const firstOfMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
+  const nextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString();
   let count = 0;
-  for (const page of results) {
-    const start = page.properties?.[P.publishedDate]?.date?.start;
-    if (!start) continue;
-    if (Date.parse(start) >= firstOfMonth) count++;
-  }
+  let cursor;
+  do {
+    const body = {
+      filter: { and: [
+        { property: P.status, status: { equals: S.publishedToGithub } },
+        { property: P.publishedDate, date: { on_or_after: firstOfMonth } },
+        { property: P.publishedDate, date: { before: nextMonth } },
+      ] },
+      page_size: 100,
+    };
+    if (cursor) body.start_cursor = cursor;
+    const data = await client.query(dbId, body);
+    count += (data.results || []).length;
+    if (data.has_more && !data.next_cursor) throw new Error('Monthly count pagination cursor missing');
+    cursor = data.has_more ? data.next_cursor : null;
+  } while (cursor);
   return count;
 }
 
@@ -360,6 +373,16 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
   const now = deps.now || Date.now;
   const sub = url.pathname.slice('/ops/api'.length); // e.g. '/overview'
 
+  // Dedicated Access Service Auth app must protect this exact path at the edge.
+  // The ingest bearer secret below is a separate second authentication layer.
+  if (sub === '/monitoring/ingest') {
+    if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+    try {
+      const result = await ingestMonitoring(request, env, await getSecrets(env), { now });
+      return json(result.body, result.code);
+    } catch { return json({ error: 'Monitoring ingestion failed' }, 503); }
+  }
+
   const auth = await verify(request, env);
   if (!auth.ok) return json({ error: auth.error }, auth.status || 403);
 
@@ -380,6 +403,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         case '/command-center': return json(await (deps.commandCenter || buildCommandCenter)(env, secrets, { now }));
         case '/attention': return json(await listActionQueue(env, secrets, client, dbId, now, deps));
         case '/observability': return json(await (deps.observability || buildObservability)(env, secrets, { now }));
+        case '/legacy-monitoring': return json(await (deps.legacyMonitoring || buildLegacyMonitoring)(env, secrets, { now }));
         case '/queue': return json(await listQueue(client, dbId));
         case '/drafts': return json(await listDrafts(client, dbId, url.searchParams.get('cursor'), {
           title: url.searchParams.get('q') || '',
