@@ -25,7 +25,11 @@ for (const fixture of fixtures) {
     description: 'Fixture article to validate the Website publishing contract.',
     date: fixture.filename.slice(0, 10), tags: ['Integration', 'Test'],
     relatedArticles: [{ title: other.title, url: '/_posts/' + other.filename }] };
-  const html = publisher.convertToHTML('## Integration heading\n\nA paragraph with **bold** and <script>alert(1)</script> text.', metadata, template);
+  const html = publisher.convertToHTML(
+    fixture.subcategory
+      ? '<h2>Integration heading</h2><p>Safe <strong>HTML</strong> content <img src="https://example.org/inline.png" onerror="alert(1)"><a href="javascript:alert(1)">bad link</a><iframe src="https://example.org"></iframe><svg onload="alert(1)"><circle /></svg></p>'
+      : '## Integration heading\\n\\nA paragraph with **bold** and <script>alert(1)</script> text.',
+    metadata, template);
   const target = path.join(root, '_posts', fixture.filename);
   if (fs.existsSync(target)) throw new Error('Fixture would overwrite an existing article: ' + target);
   fs.writeFileSync(target, html);
@@ -36,8 +40,12 @@ for (const [name, test] of [
   ['missing-category', () => publisher.convertToHTML('Text', { ...base, category: '' }, template)],
   ['unresolved-placeholder', () => publisher.convertToHTML('Text', base, template + '\n{{UNRESOLVED_CONTRACT_FIELD}}')]
 ]) {
+  const expectedMessage = name === 'missing-category' ? 'Invalid Website category' : 'Unknown Website template placeholder';
   let rejected = false;
-  try { test(); } catch { rejected = true; }
+  try { test(); } catch (error) {
+    if (!String(error.message).includes(expectedMessage)) throw new Error(name + ': unexpected rejection: ' + error.message);
+    rejected = true;
+  }
   if (!rejected) throw new Error('Negative fixture unexpectedly passed: ' + name);
 }
 console.log('Publisher negative fixtures rejected as expected');
