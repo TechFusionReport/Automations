@@ -55,6 +55,10 @@ def validate(root):
         parser.parse(html)
         assert not parser.errors, f"{filename}: HTML5 validation errors: {[(error, html.splitlines()[error[0][0]-1]) for error in parser.errors[:5]]}"
         assert "<script>alert(1)</script>" not in html, filename + ": raw script injected"
+        if expected["subcategory"]:
+            assert "<strong>HTML</strong>" in html, filename + ": production HTML branch not exercised"
+            for forbidden in ('onerror=', 'javascript:', '<iframe', '<svg', 'onload='):
+                assert forbidden not in html.lower(), filename + ": unsafe HTML remained: " + forbidden
         assert expected["sitemapUrl"] in urls, filename + ": missing expected sitemap URL"
         assert f'href="{expected["sitemapUrl"]}"' in html, filename + ": incorrect canonical"
         assert relative.endswith(expected["slug"] + ".html")
