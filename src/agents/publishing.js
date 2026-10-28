@@ -151,9 +151,12 @@ export class PublishingAgent {
     const newSlug = `${metadata.date}-${metadata.slug}`;
     posts = posts.filter(p => p.slug !== newSlug);
     posts.unshift({
-      title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
-      category: metadata.category || 'Technology', excerpt: metadata.description || '',
-      url: `/_posts/${newSlug}.html`
+      title: metadata.title, slug: newSlug, date: metadata.date,
+      category: metadata.category, subcategory: metadata.subcategory,
+      readTime: `${this.estimateReadingTime(metadata.content || '')} min read`,
+      excerpt: metadata.description || '', thumbnail: metadata.image || '', image: metadata.image || '',
+      url: `/_posts/${newSlug}.html`, feature: Boolean(metadata.featured),
+      file: `${newSlug}.html`, tags: metadata.tags || []
     });
     await this.commitFileToBranch('posts.json', JSON.stringify(posts, null, 2),
       `Update posts.json: add ${metadata.title}`, branch, secrets);
@@ -215,6 +218,8 @@ export class PublishingAgent {
     content,
     category,
     section,
+    subcategory,
+    image = null,
     tags,
     featured = false,
     seoTitle = null,
@@ -231,7 +236,7 @@ export class PublishingAgent {
     const date = new Date().toISOString().split('T')[0];
     const slug = this.sanitizeSlug(seoSlug) || this.createSlug(title);
     const path = `_posts/${date}-${slug}.html`;
-    const canonicalUrl = `https://techfusionreport.com/${path}`;
+    const canonicalUrl = `https://www.techfusionreport.com/${path}`;
 
     const metadata = {
       title,
@@ -241,8 +246,11 @@ export class PublishingAgent {
       slug,
       path,
       canonicalUrl,
-      category: category || 'General',
-      section: section || 'Technology',
+      category,
+      subcategory: subcategory || section || '',
+      section: subcategory || section || '',
+      image,
+      content,
       tags: tags || [],
       notionPageId,
       featured,
@@ -256,7 +264,8 @@ export class PublishingAgent {
 
     const contentWithAffiliates = this.affiliateInserter.insert(content);
     metadata.relatedArticles = await this.findRelatedArticles(metadata);
-    const html = this.convertToHTML(contentWithAffiliates, metadata);
+    const template = await this.fetchWebsiteTemplate(secrets);
+    const html = this.convertToHTML(contentWithAffiliates, metadata, template);
 
     const branch = `publish/${notionPageId}-${slug}`;
     await this.ensureBranch(branch, secrets);
@@ -301,7 +310,7 @@ export class PublishingAgent {
 
         let score = 0;
         if (article.category === metadata.category) score += 4;
-        if (article.section === metadata.section) score += 2;
+        if ((article.subcategory || article.section) === metadata.subcategory) score += 2;
         const overlap = (article.tags || []).filter(tag => metadata.tags.includes(tag)).length;
         score += overlap * 2;
         if (metadata.focusKeyword && String(article.focusKeyword || '').toLowerCase() === String(metadata.focusKeyword).toLowerCase()) score += 3;
@@ -310,11 +319,11 @@ export class PublishingAgent {
       }
 
       return candidates
-        .sort((a, b) => b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
+        .sort((a, b) => Number(b.category === metadata.category) - Number(a.category === metadata.category) || b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
         .slice(0, 4)
         .map(article => ({
           title: article.title,
-          url: article.canonicalUrl || `https://techfusionreport.com/_posts/${article.date}-${article.slug}.html`
+          url: article.canonicalUrl || `https://www.techfusionreport.com/_posts/${article.date}-${article.slug}.html`
         }));
     } catch (e) {
       console.warn('Related article lookup failed:', e.message);
@@ -323,97 +332,135 @@ export class PublishingAgent {
   }
 
   normalizeArticleHtml(content, metadata) {
-    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\b/i.test(content);
+    const source = String(content || '');
+    // Preserve the existing trusted article HTML produced by enhancement, but
+    // remove executable markup and event-handler attributes before insertion.
+    const cleanHtml = value => value
+      .replace(/<\s*(script|style|iframe|object|embed|form|svg|math)\b[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '')
+      .replace(/<\s*(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi, '')
+      .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\s+(href|src)\s*=\s*(["'])\s*(?:javascript|data|vbscript):[^"']*\2/gi, '');
+    const looksLikeHtml = /<(p|h2|h3|ul|ol|blockquote|pre|table)\b/i.test(source);
     let html;
-
     if (looksLikeHtml) {
-      html = content;
+      html = cleanHtml(source);
     } else {
-      html = content
-        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" class="external">$1</a>')
-        .replace(/```([\s\S]*?)```/gim, '<pre><code>$1</code></pre>')
-        .replace(/`([^`]+)`/gim, '<code>$1</code>')
-        .replace(/\n\n/g, '</p><p>');
-      html = `<p>${html}</p>`;
+      const blocks = source.split(/\n\s*\n/).map(block => {
+        const safe = this.escapeHtml(block.trim());
+        if (!safe) return '';
+        const inline = value => value
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>');
+        const heading = safe.match(/^(#{1,3})\s+([\s\S]*)$/);
+        if (heading) {
+          const level = Math.max(2, heading[1].length);
+          return `<h${level}>${inline(heading[2])}</h${level}>`;
+        }
+        return `<p>${inline(safe).replace(/\n/g, ' ')}</p>`;
+      });
+      html = blocks.filter(Boolean).join('\n');
     }
-
-    html = html.replace(/\[SPONSOR\]/gim, this.getSponsorBanner(metadata.category));
-
+    html = html.replace(/\[SPONSOR\]/gi, this.getSponsorBanner(metadata.category));
     return html.replace(/<h2(?![^>]*\bid=)([^>]*)>([\s\S]*?)<\/h2>/gi, (match, attrs, inner) => {
-      const label = this.stripHtml(inner);
-      const id = this.createSlug(label) || `section-${Math.random().toString(36).slice(2, 8)}`;
+      const id = this.createSlug(this.stripHtml(inner)) || 'article-section';
       return `<h2 id="${id}"${attrs}>${inner}</h2>`;
     });
   }
 
-  convertToHTML(content, metadata) {
+  async fetchWebsiteTemplate(secrets) {
+    const response = await fetch('https://api.github.com/repos/TechFusionReport/Website/contents/blog-post-template.html?ref=main', {
+      headers: this.githubHeaders(secrets.github_pat)
+    });
+    if (!response.ok) throw new Error(`Website template fetch failed (HTTP ${response.status})`);
+    const data = await response.json();
+    if (data.encoding !== 'base64' || !data.content) throw new Error('Invalid Website template response');
+    return decodeURIComponent(escape(atob(data.content.replace(/\s/g, ''))));
+  }
+
+  convertToHTML(content, metadata, template) {
+    if (!template || !template.includes('{{BODY_HTML}}')) throw new Error('Canonical Website template required');
+    const category = String(metadata.category || '').trim();
+    const categorySlug = category.toLowerCase();
+    if (!['technology', 'entertainment', 'productivity'].includes(categorySlug)) {
+      throw new Error(`Invalid Website category: ${category}`);
+    }
+    const replaceRequired = (source, pattern, replacement, label) => {
+      if (typeof pattern === 'string' ? !source.includes(pattern) : !pattern.test(source)) {
+        throw new Error('Website template missing required element: ' + label);
+      }
+      return source.replace(pattern, replacement);
+    };
+    const date = metadata.date;
+    const datedSlug = `${date}-${metadata.slug}`;
     const articleHtml = this.normalizeArticleHtml(content, metadata);
-    const toc = this.generateTOC(articleHtml);
-    const internalLinks = this.renderInternalLinks(metadata);
-    const schema = this.resolveSchema(metadata);
-    const seoTitle = this.escapeHtml(metadata.seoTitle || metadata.title);
-    const description = this.escapeHtml(metadata.description || '');
-    const title = this.escapeHtml(metadata.title);
-    const category = this.escapeHtml(metadata.category);
-    const section = this.escapeHtml(metadata.section);
+    const image = String(metadata.image || '').trim();
+    if (image && !/^(https?:\/\/|\/)[^\s"'<>]+$/i.test(image)) throw new Error('Invalid article image URL');
+    const related = (metadata.relatedArticles || []).map(item =>
+      `<a class="post-card" href="${this.escapeHtml(item.url)}"><h3>${this.escapeHtml(item.title)}</h3></a>`
+    ).join('\n');
+    const schema = this.resolveSchema({ ...metadata, canonicalUrl: `https://www.techfusionreport.com/_posts/${datedSlug}.html` });
+    schema['@context'] = 'https://schema.org';
+    schema['@type'] = 'BlogPosting';
+    schema.headline = metadata.title;
+    schema.description = metadata.description || '';
+    schema.datePublished = date;
+    schema.dateModified = metadata.updatedDate || date;
+    schema.articleSection = category;
+    schema.keywords = (metadata.tags || []).join(', ');
+    schema.mainEntityOfPage = `https://www.techfusionreport.com/_posts/${datedSlug}.html`;
+    schema.author = metadata.defaultAuthor
+      ? { '@type': 'Person', name: metadata.defaultAuthor }
+      : { '@type': 'Organization', name: 'TechFusion Report' };
+    schema.publisher = { '@type': 'Organization', name: 'TechFusion Report',
+      logo: { '@type': 'ImageObject', url: 'https://www.techfusionreport.com/graphics/tfr-logo-clean_transparent.png' } };
+    if (image) schema.image = image;
+    else delete schema.image;
+    const jsonLd = JSON.stringify(schema).replace(/[<>&]/g, ch => String.fromCharCode(92) + ({ '<': 'u003c', '>': 'u003e', '&': 'u0026' })[ch]);
+    let html = replaceRequired(template, /<script type="application\/ld\+json">[\s\S]*?<\/script>/i,
+      `<script type="application/ld+json">${jsonLd}</script>`, 'JSON-LD script');
+    if (!image) {
+      html = html.replace(/^\s*<meta (?:property="og:image"|name="twitter:image")[^>]*>\s*$/gm, '');
+      html = replaceRequired(html, /\s*<figure class="article-hero-media">[\s\S]*?<\/figure>/, '', 'hero figure');
+    }
+    if (!metadata.inlineImage) html = replaceRequired(html, /\s*<figure class="article-inline-art">[\s\S]*?<\/figure>/, '', 'inline art figure');
+    if (!metadata.bodyContinuedHtml) html = replaceRequired(html, /\s*<section class="article-body article-content">\s*{{BODY_CONTINUED_HTML}}\s*<\/section>/, '', 'continued body section');
+    html = replaceRequired(html, '<article class="article-shell article-template-shell">',
+      `<article class="article-shell article-template-shell" data-category="${this.escapeHtml(category)}" data-section="${this.escapeHtml(metadata.subcategory || '')}">`, 'article shell');
+    const displayDate = new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC'
+    });
+    const fields = {
+      TITLE: metadata.title, META_DESCRIPTION: metadata.description || '', SLUG: datedSlug,
+      IMAGE: image, IMAGE_ALT: metadata.imageAltText || metadata.title,
+      IMAGE_CAPTION: metadata.imageCaption || '', CATEGORY: category, CATEGORY_SLUG: categorySlug,
+      SUBCATEGORY: metadata.subcategory || '', TAGS: (metadata.tags || []).join(', '),
+      DATE: date, UPDATED_DATE: metadata.updatedDate || date, DISPLAY_DATE: displayDate,
+      READ_TIME: `${this.estimateReadingTime(articleHtml)} min read`,
+      AUTHOR: metadata.defaultAuthor || 'TechFusion Report', DEK: metadata.dek || metadata.description || '',
+      TLDR: this.generateTLDR(articleHtml), BODY_HTML: articleHtml,
+      INLINE_IMAGE: metadata.inlineImage || '', INLINE_IMAGE_ALT: metadata.inlineImageAlt || '',
+      INLINE_IMAGE_CAPTION: metadata.inlineImageCaption || '',
+      BODY_CONTINUED_HTML: metadata.bodyContinuedHtml || '',
+      CATEGORY_DESCRIPTION: metadata.categoryDescription || `More stories from ${category}.`,
+      RELATED_ARTICLES: related
+    };
+    // Validate template tokens before inserting user-authored article content.
+    if (/{{[^}]+}}/.test(html.replace(/{{[A-Z_]+}}/g, ''))) {
+      throw new Error('Unresolved Website template placeholders');
+    }
+    html = html.replace(/{{([A-Z_]+)}}/g, (whole, key) => {
+      if (!(key in fields)) throw new Error(`Unknown Website template placeholder: ${key}`);
+      return key === 'BODY_HTML' || key === 'BODY_CONTINUED_HTML' || key === 'RELATED_ARTICLES'
+        ? fields[key] : this.escapeHtml(fields[key]);
+    });
+    // The canonical template contains unescaped ampersands in its Google Fonts URL.
+    // Escape query separators in that attribute so emitted article HTML is HTML5-valid.
+    html = html.replace(/<link\b[^>]*href="https:\/\/fonts\.googleapis\.com\/[^"]*"[^>]*>/gi,
+      tag => tag.replace(/&(?!(?:amp|quot|lt|gt|#\d+|#x[0-9a-f]+);)/gi, '&amp;'));
 
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${seoTitle}</title>
-  <meta name="description" content="${description}">
-  <meta property="og:title" content="${seoTitle}">
-  <meta property="og:description" content="${description}">
-  <meta property="og:type" content="article">
-  <meta property="og:url" content="${this.escapeHtml(metadata.canonicalUrl)}">
-  <meta property="article:section" content="${category}">
-  <meta property="article:tag" content="${this.escapeHtml(metadata.tags.join(','))}">
-  <meta property="article:published_time" content="${metadata.date}">
-  ${metadata.focusKeyword ? `<meta name="keywords" content="${this.escapeHtml(metadata.focusKeyword)}">` : ''}
-  <script type="application/ld+json">${JSON.stringify(schema)}</script>
-  <link rel="stylesheet" href="/assets/style.css">
-  <link rel="canonical" href="${this.escapeHtml(metadata.canonicalUrl)}">
-</head>
-<body>
-  <article data-category="${category}" data-section="${section}" data-slug="${this.escapeHtml(metadata.slug)}">
-    <header>
-      <nav class="breadcrumb">
-        <a href="/">Home</a> /
-        <a href="/${this.createSlug(metadata.section)}">${section}</a> /
-        <a href="/${this.createSlug(metadata.section)}/${this.createSlug(metadata.category)}">${category}</a>
-      </nav>
-      <span class="category-badge">${category}</span>
-      ${metadata.featured ? '<span class="featured-badge">Featured</span>' : ''}
-      <h1 id="ab-headline">${title}</h1>
-      <div class="tags">
-        ${metadata.tags.map(tag => `<span class="tag"><a href="/tag/${this.createSlug(tag)}">${this.escapeHtml(tag)}</a></span>`).join('')}
-      </div>
-      <time datetime="${metadata.date}">${new Date(metadata.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</time>
-      <div class="reading-time">${this.estimateReadingTime(articleHtml)} min read</div>
-    </header>
-
-    <div class="content-wrapper">
-      ${toc ? `<aside class="toc"><h3>Table of Contents</h3>${toc}</aside>` : ''}
-      <div class="content">
-        <div class="tldr"><strong>TL;DR:</strong> ${this.escapeHtml(this.generateTLDR(articleHtml))}</div>
-        ${articleHtml}
-        ${internalLinks}
-        <div class="newsletter-cta">
-          <h3>Enjoyed this article?</h3>
-          <p>Subscribe to TechFusion Report for weekly tech insights.</p>
-        </div>
-      </div>
-    </div>
-  </article>
-</body>
-</html>`;
+    return html;
   }
 
   generateMetaDescription(content) {
