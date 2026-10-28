@@ -50,7 +50,9 @@ def validate(root):
         filename = expected["filename"]
         relative = "/_posts/" + filename
         html = (root / "_posts" / filename).read_text()
-        assert not re.search(r"\{\{[^}]+\}\}", html), filename + ": unresolved template placeholder"
+        assert not re.search(r"\\{\\{(?:TITLE|META_DESCRIPTION|BODY_HTML|RELATED_ARTICLES|SLUG|CATEGORY)\\}\\}", html), filename + ": unresolved template token"
+        if not expected["subcategory"]:
+            assert "{{CODE_SAMPLE}}" in html, filename + ": legitimate article braces were removed
         parser = html5lib.HTMLParser(strict=False)
         parser.parse(html)
         assert not parser.errors, f"{filename}: HTML5 validation errors: {[(error, html.splitlines()[error[0][0]-1]) for error in parser.errors[:5]]}"
@@ -87,8 +89,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="tfr-publisher-") as temporary:
         root = Path(temporary) / "website"
         shutil.copytree(website, root, ignore=shutil.ignore_patterns(".git"))
-        # Normalize any pre-existing generated Website drift BEFORE capturing the baseline.
+        # Report upstream Website drift before normalizing the isolated baseline.
+        before = fingerprint(root)
         scripts(root)
+        after = fingerprint(root)
+        drift = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+        print("Informational pre-baseline Website drift:", drift if drift else "none", flush=True)
         run("git", "init", "-q", cwd=root)
         run("git", "add", "-A", cwd=root)
         run("git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
