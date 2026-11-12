@@ -169,7 +169,7 @@ export class PublisherPoller {
       content,
       category: props[CATALOG_PROPERTIES.category]?.select?.name || 'General',
       subcategory: props[CATALOG_PROPERTIES.subcategory]?.select?.name || '',
-      image: props['🖼️ Thumbnail']?.url || props['🖼️ Thumbnail']?.files?.[0]?.external?.url || props['🖼️ Thumbnail']?.files?.[0]?.file?.url || null,
+      image: props[CATALOG_PROPERTIES.thumbnail]?.url || props[CATALOG_PROPERTIES.thumbnail]?.files?.[0]?.external?.url || props[CATALOG_PROPERTIES.thumbnail]?.files?.[0]?.file?.url || null,
       tags: props[CATALOG_PROPERTIES.tags]?.multi_select?.map(t => t.name) || [],
       featured: props[CATALOG_PROPERTIES.featured]?.checkbox || false,
       seoTitle: this.readRichText(props[CATALOG_PROPERTIES.seoTitle]) || title,

@@ -40,6 +40,8 @@ export const CATALOG_PROPERTIES = Object.freeze({
   internalLinks: '🔄 Internal Links',
   relatedTopic: '🧩 Related Topic',
   imageAltText: '🖼️ Image Alt Text',
+  // Exact owner-confirmed spelling includes U+FE0F after the emoji.
+  thumbnail: '🖼️ Thumbnail',
   seoFaq: '❓ SEO FAQ',
   jsonLd: '🧾 JSON-LD',
   blogDraft: '📝 Blog Draft'
