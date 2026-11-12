@@ -45,6 +45,23 @@ for (const fixture of fixtures) {
 }
 fs.writeFileSync(path.join(root, '.publisher-fixture-expectations.json'), JSON.stringify(fixtures, null, 2));
 const base = { title: 'Invalid', slug: 'invalid', date: '2026-10-27', category: 'Technology', description: 'Invalid fixture', tags: [] };
+// Change only the in-memory string; never write the Website template.
+const seoTemplate = template
+  .replace(/<title>[\s\S]*?<\/title>/i, '<title>{{SEO_TITLE}}</title>')
+  .replace(/(<meta\s+property="og:title"\s+content=")[^"]*(")/i, '$1{{SEO_TITLE}}$2')
+  .replace(/(<meta\s+name="twitter:title"\s+content=")[^"]*(")/i, '$1{{SEO_TITLE}}$2');
+const plainTitle = 'Plain & "visible" <title>';
+const seoTitle = 'SEO & "search" <title> \'quoted\'';
+for (const seo of [seoTitle, '']) {
+  const html = publisher.convertToHTML('Text', { ...base, title: plainTitle, seoTitle: seo }, seoTemplate);
+  const escaped = publisher.escapeHtml(seo || plainTitle);
+  assert.ok(html.includes('<title>' + escaped + '</title>'));
+  assert.ok(html.includes('property="og:title" content="' + escaped + '"'));
+  assert.ok(html.includes('name="twitter:title" content="' + escaped + '"'));
+  assert.match(html, new RegExp('<h1\\b[^>]*>' + publisher.escapeHtml(plainTitle) + '</h1>'));
+}
+assert.doesNotThrow(() => publisher.convertToHTML('Text', { ...base, seoTitle }, template));
+console.log('Optional SEO_TITLE, escaping, fallback, and plain h1 fixtures passed');
 const dollarText = "$& $$ $` $'";
 const fallbackHtml = publisher.normalizeArticleHtml([
   '```text', '<script>alert(1)</script> **literal**', '', 'second code line', '```', '',

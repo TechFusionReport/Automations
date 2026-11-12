@@ -443,6 +443,7 @@ export class PublishingAgent {
       month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC'
     });
     const fields = {
+      SEO_TITLE: metadata.seoTitle || metadata.title,
       TITLE: metadata.title, META_DESCRIPTION: metadata.description || '', SLUG: datedSlug,
       IMAGE: image, IMAGE_ALT: metadata.imageAltText || metadata.title,
       IMAGE_CAPTION: metadata.imageCaption || '', CATEGORY: category, CATEGORY_SLUG: categorySlug,
