@@ -46,6 +46,14 @@ for (const fixture of fixtures) {
 fs.writeFileSync(path.join(root, '.publisher-fixture-expectations.json'), JSON.stringify(fixtures, null, 2));
 const base = { title: 'Invalid', slug: 'invalid', date: '2026-10-27', category: 'Technology', description: 'Invalid fixture', tags: [] };
 const dollarText = "$& $$ $` $'";
+const fallbackHtml = publisher.normalizeArticleHtml([
+  '```text', '<script>alert(1)</script> **literal**', '', 'second code line', '```', '',
+  '- First <script>text</script>', '- Second **bold**', '', '1. One', '2. Two'
+].join('\n'), base);
+assert.ok(fallbackHtml.includes('<pre><code>&lt;script&gt;alert(1)&lt;/script&gt; **literal**\n\nsecond code line\n</code></pre>'));
+assert.ok(fallbackHtml.includes('<ul><li>First &lt;script&gt;text&lt;/script&gt;</li><li>Second <strong>bold</strong></li></ul>'));
+assert.ok(fallbackHtml.includes('<ol><li>One</li><li>Two</li></ol>'));
+assert.ok(!fallbackHtml.includes('<script>'));
 const dollarHtml = publisher.convertToHTML('Text', {
   ...base, title: dollarText, description: dollarText, subcategory: dollarText
 }, template);
@@ -76,6 +84,7 @@ try {
   for (const fixture of fixtures) {
     await publisher.updatePostsJsonOnBranch({
       title: fixture.title, slug: fixture.slug, date: fixture.filename.slice(0, 10),
+      seoTitle: fixture.title + ' SEO',
       category: fixture.category, subcategory: fixture.subcategory, image: fixture.image,
       description: 'Fixture article to validate the Website publishing contract.',
       path: '_posts/' + fixture.filename, tags: ['Integration', 'Test']
@@ -84,7 +93,7 @@ try {
     const post = captured.posts[0];
     if (post.file !== fixture.filename || post.url !== '/_posts/' + fixture.filename ||
         post.category !== fixture.category || post.subcategory !== fixture.subcategory ||
-        post.title !== fixture.title) {
+        post.title !== fixture.title || post.seoTitle !== fixture.title + ' SEO') {
       throw new Error('Publisher posts.json writer violates Website contract: ' + JSON.stringify(post));
     }
   }

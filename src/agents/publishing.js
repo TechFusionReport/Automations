@@ -151,7 +151,7 @@ export class PublishingAgent {
     const newSlug = `${metadata.date}-${metadata.slug}`;
     posts = posts.filter(p => p.slug !== newSlug);
     posts.unshift({
-      title: metadata.title, slug: newSlug, date: metadata.date,
+      title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
       category: metadata.category, subcategory: metadata.subcategory,
       readTime: `${this.estimateReadingTime(metadata.content || '')} min read`,
       excerpt: metadata.description || '', thumbnail: metadata.image || '', image: metadata.image || '',
@@ -345,7 +345,11 @@ export class PublishingAgent {
     if (looksLikeHtml) {
       html = cleanHtml(source);
     } else {
-      const blocks = source.split(/\n\s*\n/).map(block => {
+      // Parse fences before paragraph splitting so blank lines remain code text.
+      const blocks = source.split(/(^```[^\n]*\n[\s\S]*?^```[ \t]*$)/m).flatMap(part => {
+        const fenced = part.match(/^```[^\n]*\n([\s\S]*?)^```[ \t]*$/m);
+        if (fenced) return [`<pre><code>${this.escapeHtml(fenced[1])}</code></pre>`];
+        return part.split(/\n\s*\n/).map(block => {
         const safe = this.escapeHtml(block.trim());
         if (!safe) return '';
         const inline = value => value
@@ -353,12 +357,19 @@ export class PublishingAgent {
           .replace(/\*(.+?)\*/g, '<em>$1</em>')
           .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
           .replace(/`([^`]+)`/g, '<code>$1</code>');
+        const lines = safe.split('\n');
+        for (const [marker, tag] of [[/^\s*[-+*]\s+(.+)$/, 'ul'], [/^\s*\d+\.\s+(.+)$/, 'ol']]) {
+          if (lines.every(line => marker.test(line))) {
+            return `<${tag}>` + lines.map(line => `<li>${inline(line.match(marker)[1])}</li>`).join('') + `</${tag}>`;
+          }
+        }
         const heading = safe.match(/^(#{1,3})\s+([\s\S]*)$/);
         if (heading) {
           const level = Math.max(2, heading[1].length);
           return `<h${level}>${inline(heading[2])}</h${level}>`;
         }
         return `<p>${inline(safe).replace(/\n/g, ' ')}</p>`;
+        });
       });
       html = blocks.filter(Boolean).join('\n');
     }
