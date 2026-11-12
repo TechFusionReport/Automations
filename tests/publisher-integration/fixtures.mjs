@@ -62,6 +62,47 @@ for (const seo of [seoTitle, '']) {
 }
 assert.doesNotThrow(() => publisher.convertToHTML('Text', { ...base, seoTitle }, template));
 console.log('Optional SEO_TITLE, escaping, fallback, and plain h1 fixtures passed');
+const schemaFrom = metadata => {
+  const html = publisher.convertToHTML('Text', { ...base, ...metadata }, template);
+  const serialized = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i)[1];
+  assert.ok(!/[<>&]/.test(serialized), 'JSON-LD must keep script-safe escaping');
+  return JSON.parse(serialized);
+};
+const suppliedFaq = {
+  '@context': 'custom context', '@type': 'FAQPage', headline: 'Supplied <&> $& $$ $\' title',
+  description: '', datePublished: null, dateModified: 'supplied modified',
+  mainEntityOfPage: 'supplied canonical', author: { name: 'Supplied Author' },
+  publisher: { name: 'Supplied Publisher' }, image: 'supplied image',
+  mainEntity: [{ '@type': 'Question', name: 'Question?', acceptedAnswer: { '@type': 'Answer', text: 'Answer.' } }]
+};
+assert.deepEqual(schemaFrom({ jsonLd: JSON.stringify(suppliedFaq), schemaType: 'Article' }), suppliedFaq);
+const suppliedGraph = { '@graph': [{ '@type': 'FAQPage', headline: '<&> graph' }] };
+assert.deepEqual(schemaFrom({ jsonLd: JSON.stringify(suppliedGraph) }), suppliedGraph);
+const suppliedArray = [{ '@type': 'NewsArticle', headline: 'Array <&> title' }];
+assert.deepEqual(schemaFrom({ jsonLd: JSON.stringify(suppliedArray) }), suppliedArray);
+const partial = schemaFrom({ jsonLd: { headline: '', description: null }, schemaType: 'FAQPage' });
+assert.equal(partial.headline, '');
+assert.equal(partial.description, null);
+assert.equal(partial['@type'], 'BlogPosting');
+assert.ok(!Object.hasOwn(partial, 'image'));
+assert.equal(partial.dateModified, base.date);
+assert.equal(schemaFrom({ jsonLd: {}, image: '/fixture-image.png' }).image, '/fixture-image.png');
+for (const jsonLd of ['{invalid', '', 'null', '42', '"text"']) {
+  assert.throws(() => schemaFrom({ jsonLd }), /^Error: Invalid supplied JSON-LD$/);
+}
+assert.equal(schemaFrom({})['@type'], 'BlogPosting');
+for (const schemaType of ['Article', 'NewsArticle']) assert.equal(schemaFrom({ schemaType })['@type'], schemaType);
+const originalWarn = console.warn;
+const warnings = [];
+try {
+  console.warn = message => warnings.push(message);
+  for (const schemaType of ['FAQPage', 'HowTo', 'Review', 'VideoObject']) {
+    assert.equal(schemaFrom({ schemaType })['@type'], 'BlogPosting');
+  }
+} finally { console.warn = originalWarn; }
+assert.equal(warnings.length, 4);
+assert.ok(warnings.every(message => message.includes('falling back to BlogPosting')));
+console.log('Supplied JSON-LD preservation, graph/array, fail-closed parsing, defaults, schemaType and fallback fixtures passed');
 const dollarText = "$& $$ $` $'";
 const fallbackHtml = publisher.normalizeArticleHtml([
   '```text', '<script>alert(1)</script> **literal**', '', 'second code line', '```', '',

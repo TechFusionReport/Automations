@@ -225,7 +225,7 @@ export class PublishingAgent {
     seoTitle = null,
     seoSlug = null,
     seoMeta = null,
-    schemaType = 'Article',
+    schemaType = null,
     jsonLd = null,
     internalLinks = null,
     focusKeyword = null,
@@ -254,7 +254,7 @@ export class PublishingAgent {
       tags: tags || [],
       notionPageId,
       featured,
-      schemaType: schemaType || 'Article',
+      schemaType,
       jsonLd,
       internalLinks,
       focusKeyword,
@@ -412,22 +412,6 @@ export class PublishingAgent {
       `<a class="post-card" href="${this.escapeHtml(item.url)}"><h3>${this.escapeHtml(item.title)}</h3></a>`
     ).join('\n');
     const schema = this.resolveSchema({ ...metadata, canonicalUrl: `https://www.techfusionreport.com/_posts/${datedSlug}.html` });
-    schema['@context'] = 'https://schema.org';
-    schema['@type'] = 'BlogPosting';
-    schema.headline = metadata.title;
-    schema.description = metadata.description || '';
-    schema.datePublished = date;
-    schema.dateModified = metadata.updatedDate || date;
-    schema.articleSection = category;
-    schema.keywords = (metadata.tags || []).join(', ');
-    schema.mainEntityOfPage = `https://www.techfusionreport.com/_posts/${datedSlug}.html`;
-    schema.author = metadata.defaultAuthor
-      ? { '@type': 'Person', name: metadata.defaultAuthor }
-      : { '@type': 'Organization', name: 'TechFusion Report' };
-    schema.publisher = { '@type': 'Organization', name: 'TechFusion Report',
-      logo: { '@type': 'ImageObject', url: 'https://www.techfusionreport.com/graphics/tfr-logo-clean_transparent.png' } };
-    if (image) schema.image = image;
-    else delete schema.image;
     const jsonLd = JSON.stringify(schema).replace(/[<>&]/g, ch => String.fromCharCode(92) + ({ '<': 'u003c', '>': 'u003e', '&': 'u0026' })[ch]);
     let html = replaceRequired(template, /<script type="application\/ld\+json">[\s\S]*?<\/script>/i,
       `<script type="application/ld+json">${jsonLd}</script>`, 'JSON-LD script');
@@ -497,39 +481,47 @@ export class PublishingAgent {
   }
 
   resolveSchema(metadata) {
-    if (metadata.jsonLd) {
+    if (metadata.jsonLd !== undefined && metadata.jsonLd !== null) {
+      let parsed;
       try {
-        const parsed = typeof metadata.jsonLd === 'string' ? JSON.parse(metadata.jsonLd) : metadata.jsonLd;
-        return {
-          ...parsed,
-          '@context': parsed['@context'] || 'https://schema.org',
-          '@type': parsed['@type'] || metadata.schemaType || 'Article',
-          headline: parsed.headline || metadata.seoTitle || metadata.title,
-          description: parsed.description || metadata.description,
-          datePublished: parsed.datePublished || metadata.date,
-          mainEntityOfPage: parsed.mainEntityOfPage || metadata.canonicalUrl,
-          publisher: parsed.publisher || { '@type': 'Organization', name: 'TechFusion Report', url: 'https://www.techfusionreport.com' }
-        };
-      } catch (e) {
-        console.warn('Invalid JSON-LD from Notion; using generated schema:', e.message);
+        parsed = typeof metadata.jsonLd === 'string' ? JSON.parse(metadata.jsonLd) : metadata.jsonLd;
+        if (!parsed || typeof parsed !== 'object') throw new Error();
+      } catch {
+        throw new Error('Invalid supplied JSON-LD');
       }
+      if (Array.isArray(parsed) || Object.hasOwn(parsed, '@graph')) return parsed;
+      const result = { ...parsed };
+      const defaults = this.generateSchema({ ...metadata, schemaType: null });
+      for (const key of ['@context', '@type', 'headline', 'description', 'datePublished',
+        'dateModified', 'mainEntityOfPage', 'author', 'publisher', 'image']) {
+        if (!Object.hasOwn(result, key) && Object.hasOwn(defaults, key)) result[key] = defaults[key];
+      }
+      return result;
     }
 
     return this.generateSchema(metadata);
   }
 
   generateSchema(metadata) {
+    let type = 'BlogPosting';
+    if (['Article', 'NewsArticle'].includes(metadata.schemaType)) type = metadata.schemaType;
+    else if (['FAQPage', 'HowTo', 'Review', 'VideoObject'].includes(metadata.schemaType)) {
+      console.warn('Schema type requires supplied JSON-LD; falling back to BlogPosting.');
+    }
     return {
       '@context': 'https://schema.org',
-      '@type': metadata.schemaType || 'Article',
-      headline: metadata.seoTitle || metadata.title,
-      description: metadata.description,
+      '@type': type,
+      headline: metadata.title,
+      description: metadata.description || '',
       datePublished: metadata.date,
+      dateModified: metadata.updatedDate || metadata.date,
       mainEntityOfPage: metadata.canonicalUrl,
       author: metadata.defaultAuthor
         ? { '@type': 'Person', name: metadata.defaultAuthor }
         : { '@type': 'Organization', name: 'TechFusion Report' },
       publisher: { '@type': 'Organization', name: 'TechFusion Report', url: 'https://www.techfusionreport.com' },
+      ...(metadata.image ? { image: metadata.image } : {}),
+      articleSection: metadata.category,
       keywords: [metadata.focusKeyword, ...(metadata.tags || [])].filter(Boolean).join(', ') || undefined
     };
   }
