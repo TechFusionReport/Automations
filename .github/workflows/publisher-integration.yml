@@ -1,0 +1,41 @@
+name: Publisher integration (informational)
+on:
+  pull_request:
+    paths:
+      - 'src/agents/publishing.js'
+      - 'src/agents/publisher-poller.js'
+      - 'tests/publisher-integration/**'
+      - '.github/workflows/publisher-integration.yml'
+      - '.github/workflows/publisher-website-drift.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publisher-website-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automations
+          persist-credentials: false
+      - name: Read pinned Website commit
+        id: pin
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < automations/tests/publisher-integration/website-ref.txt)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: TechFusionReport/Website
+          ref: ${{ steps.pin.outputs.sha }}
+          path: website
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'html5lib==1.1'
+      - run: python automations/tests/publisher-integration/check.py automations website
