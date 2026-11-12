@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import { PublishingAgent } from '../../src/agents/publishing.js';
 
@@ -28,8 +29,12 @@ for (const fixture of fixtures) {
   const html = publisher.convertToHTML(
     fixture.subcategory
       ? '<h2>Integration heading</h2><p>Safe <strong>HTML</strong> content <img src="https://example.org/inline.png" onerror="alert(1)"><a href="javascript:alert(1)">bad link</a><iframe src="https://example.org"></iframe><svg onload="alert(1)"><circle /></svg></p>'
-      : '## Integration heading\\n\\nA paragraph with **bold**, literal {{CODE_SAMPLE}}, and <script>alert(1)</script> text.',
+      : '## Integration heading\n\nA paragraph with **bold**, literal {{CODE_SAMPLE}}, and <script>alert(1)</script> text.',
     metadata, template);
+  if (!fixture.subcategory) {
+    assert.match(html, /<h2\b[^>]*>Integration heading<\/h2>/);
+    assert.match(html, /<p>A paragraph with <strong>bold<\/strong>,/);
+  }
   const target = path.join(root, '_posts', fixture.filename);
   if (fs.existsSync(target)) throw new Error('Fixture would overwrite an existing article: ' + target);
   fs.writeFileSync(target, html);
