@@ -41,6 +41,21 @@ def fingerprint(root):
             for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}
 
 
+def assert_no_template_tokens(html, filename):
+    assert not re.search(r"\{\{(?:TITLE|META_DESCRIPTION|BODY_HTML|RELATED_ARTICLES|SLUG|CATEGORY)\}\}", html), filename + ": unresolved template token"
+
+
+def self_test_template_tokens():
+    assert_no_template_tokens("<p>Complete article</p>", "resolved self-test")
+    try:
+        assert_no_template_tokens("<h1>{{TITLE}}</h1>", "unresolved self-test")
+    except AssertionError as error:
+        assert "unresolved template token" in str(error)
+    else:
+        raise AssertionError("Unresolved-token assertion did not reject {{TITLE}}")
+    print("Unresolved-token assertion self-test passed")
+
+
 def validate(root):
     fixtures = json.loads((root / ".publisher-fixture-expectations.json").read_text())
     index = json.loads((root / "posts.json").read_text())
@@ -50,7 +65,7 @@ def validate(root):
         filename = expected["filename"]
         relative = "/_posts/" + filename
         html = (root / "_posts" / filename).read_text()
-        assert not re.search(r"\\{\\{(?:TITLE|META_DESCRIPTION|BODY_HTML|RELATED_ARTICLES|SLUG|CATEGORY)\\}\\}", html), filename + ": unresolved template token"
+        assert_no_template_tokens(html, filename)
         if not expected["subcategory"]:
             assert "{{CODE_SAMPLE}}" in html, filename + ": legitimate article braces were removed"
         parser = html5lib.HTMLParser(strict=False)
@@ -82,6 +97,7 @@ def validate(root):
 
 
 def main():
+    self_test_template_tokens()
     if len(sys.argv) != 3:
         raise SystemExit("Usage: check.py <automations-checkout> <website-checkout>")
     automations = Path(sys.argv[1]).resolve()
