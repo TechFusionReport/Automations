@@ -390,7 +390,7 @@ export class PublishingAgent {
       if (typeof pattern === 'string' ? !source.includes(pattern) : !pattern.test(source)) {
         throw new Error('Website template missing required element: ' + label);
       }
-      return source.replace(pattern, replacement);
+      return source.replace(pattern, () => replacement);
     };
     const date = metadata.date;
     const datedSlug = `${date}-${metadata.slug}`;

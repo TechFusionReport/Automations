@@ -13,7 +13,7 @@ const fixtures = [
     image: 'https://example.org/fixture-hero.png', listing: 'ai.html', categoryListing: 'technology.html',
     sitemapUrl: 'https://www.techfusionreport.com/_posts/2026-10-27-integration-ai-guide.html',
     related: '2026-10-26-integration-entertainment-guide.html' },
-  { filename: '2026-10-26-integration-entertainment-guide.html', title: 'Entertainment Integration Guide',
+  { filename: '2026-10-26-integration-entertainment-guide.html', title: "Entertainment $& $$ $' Integration Guide",
     slug: 'integration-entertainment-guide', category: 'Entertainment', subcategory: '',
     image: '', listing: 'entertainment.html', categoryListing: 'entertainment.html',
     sitemapUrl: 'https://www.techfusionreport.com/_posts/2026-10-26-integration-entertainment-guide.html',
@@ -35,12 +35,24 @@ for (const fixture of fixtures) {
     assert.match(html, /<h2\b[^>]*>Integration heading<\/h2>/);
     assert.match(html, /<p>A paragraph with <strong>bold<\/strong>,/);
   }
+  const jsonLd = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+  assert.ok(jsonLd, 'JSON-LD script missing');
+  assert.equal(JSON.parse(jsonLd[1]).headline, fixture.title);
+  assert.equal(JSON.parse(jsonLd[1]).description, metadata.description);
   const target = path.join(root, '_posts', fixture.filename);
   if (fs.existsSync(target)) throw new Error('Fixture would overwrite an existing article: ' + target);
   fs.writeFileSync(target, html);
 }
 fs.writeFileSync(path.join(root, '.publisher-fixture-expectations.json'), JSON.stringify(fixtures, null, 2));
 const base = { title: 'Invalid', slug: 'invalid', date: '2026-10-27', category: 'Technology', description: 'Invalid fixture', tags: [] };
+const dollarText = "$& $$ $` $'";
+const dollarHtml = publisher.convertToHTML('Text', {
+  ...base, title: dollarText, description: dollarText, subcategory: dollarText
+}, template);
+const dollarSchema = JSON.parse(dollarHtml.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i)[1]);
+assert.equal(dollarSchema.headline, dollarText);
+assert.equal(dollarSchema.description, dollarText);
+assert.ok(dollarHtml.includes('data-section="' + publisher.escapeHtml(dollarText) + '"'));
 for (const [name, test] of [
   ['missing-category', () => publisher.convertToHTML('Text', { ...base, category: '' }, template)],
   ['unresolved-placeholder', () => publisher.convertToHTML('Text', base, template + '\n{{UNRESOLVED_CONTRACT_FIELD}}')]
