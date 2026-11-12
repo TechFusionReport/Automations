@@ -507,7 +507,7 @@ export class PublishingAgent {
           description: parsed.description || metadata.description,
           datePublished: parsed.datePublished || metadata.date,
           mainEntityOfPage: parsed.mainEntityOfPage || metadata.canonicalUrl,
-          publisher: parsed.publisher || { '@type': 'Organization', name: 'TechFusion Report', url: 'https://techfusionreport.com' }
+          publisher: parsed.publisher || { '@type': 'Organization', name: 'TechFusion Report', url: 'https://www.techfusionreport.com' }
         };
       } catch (e) {
         console.warn('Invalid JSON-LD from Notion; using generated schema:', e.message);
@@ -528,7 +528,7 @@ export class PublishingAgent {
       author: metadata.defaultAuthor
         ? { '@type': 'Person', name: metadata.defaultAuthor }
         : { '@type': 'Organization', name: 'TechFusion Report' },
-      publisher: { '@type': 'Organization', name: 'TechFusion Report', url: 'https://techfusionreport.com' },
+      publisher: { '@type': 'Organization', name: 'TechFusion Report', url: 'https://www.techfusionreport.com' },
       keywords: [metadata.focusKeyword, ...(metadata.tags || [])].filter(Boolean).join(', ') || undefined
     };
   }
