@@ -6,3 +6,6 @@
 !.dev.vars.example
 .env*
 !.env.example
+
+# Dry-run output (would-be public JSON)
+out/

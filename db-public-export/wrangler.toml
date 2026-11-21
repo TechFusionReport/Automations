@@ -1,0 +1,17 @@
+name = "db-public-export"
+main = "db-public-export.js"
+compatibility_date = "2026-07-19"
+
+# The route (www.techfusionreport.com/data/*) is attached in the Cloudflare dashboard, not here.
+
+# Keep the DB_* variables set in the dashboard. Without this, every deploy would replace the
+# dashboard's variables with the (empty) set in this file.
+keep_vars = true
+
+# R2 bucket holding the public JSON. Create it first (see README.md), then make the name match.
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "tfr-public-data"
+
+# Secrets (NOTION_TOKEN, EXPORT_KEY) and the four DB_* variables are set in the dashboard.
+# No values belong in this file.

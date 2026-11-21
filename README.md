@@ -9,4 +9,5 @@ Run the available tests with:
 ```sh
 node --test tests/*.test.js tests/*.test.mjs
 ```
-                   
+
+Public search data (Notion to R2 JSON) is handled by a separate Worker; see [db-public-export](db-public-export/README.md).
