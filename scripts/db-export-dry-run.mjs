@@ -23,7 +23,7 @@ if (!token) {
 }
 
 const TOP_TAGS = 100;
-const tagConfig = normalizeTagConfig(JSON.parse(await readFile(new URL('../config/public-tags.json', import.meta.url), 'utf8')));
+const tagConfig = normalizeTagConfig(JSON.parse(await readFile(new URL('../db-public-export/public-tags.json', import.meta.url), 'utf8')));
 const outDir = new URL('../out/', import.meta.url);
 await mkdir(outDir, { recursive: true });
 const client = createNotionClient({ token });

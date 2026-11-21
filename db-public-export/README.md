@@ -36,7 +36,7 @@ Rows without a name or a valid `https` URL are skipped (`http` is upgraded). Ids
 
 ## Tags
 
-Only tags listed in [`config/public-tags.json`](../config/public-tags.json) are published. It ships empty, so **no tags are published** until an approved list is committed:
+Only tags listed in [`db-public-export/public-tags.json`](public-tags.json) are published. It ships empty, so **no tags are published** until an approved list is committed:
 
 ```json
 { "allow": ["Notes", "Budgeting"], "aliases": { "Finances": "Budgeting" } }
@@ -55,13 +55,13 @@ Uses `Notion-Version: 2025-09-03`. `GET /v1/databases/{id}` resolves the databas
 ## SETUP CHECKLIST (Justin)
 
 1. Create the R2 bucket (name it `tfr-public-data`, or change `bucket_name` in `wrangler.toml` to match).
-2. Create the Worker `db-public-export` in Cloudflare Workers Builds from this repo. Use the **repo root** as the build root and `db-public-export/wrangler.toml` as the config (the Worker imports `../config/public-tags.json`). Do not use `wrangler` on the ARM64 box.
+2. Create the Worker `db-public-export` in Cloudflare Workers Builds from this repo. Use `db-public-export/` as the root directory; the Worker is self-contained (it imports only files in that folder). Do not use `wrangler` on the ARM64 box.
 3. Confirm the `DATA_BUCKET` binding points at the bucket.
 4. Add Worker **secrets** in the dashboard: `NOTION_TOKEN` (read-only integration) and `EXPORT_KEY` (a long random string).
 5. Add Worker **variables**: `DB_SMARTPHONE_APPS`, `DB_GTK_WEBSITES`, `DB_AI_TOOLS`, `DB_OPEN_SOURCE_ALTERNATIVES` (database ids). `keep_vars = true` stops deploys from wiping them.
 6. Share each of the four databases with the read-only Notion integration.
 7. Add the route `www.techfusionreport.com/data/*` to the Worker.
-8. Approve a tag list and commit it to `config/public-tags.json` (optional; until then no tags are published).
+8. Approve a tag list and commit it to `db-public-export/public-tags.json` (optional; until then no tags are published).
 9. Trigger the first export: `curl -X POST -H "X-Export-Key: $EXPORT_KEY" https://www.techfusionreport.com/data/_export`, then check `ok: true` and open one `/data/*.json` file.
 10. Add the n8n schedule that calls the same `POST`.
 

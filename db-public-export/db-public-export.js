@@ -6,7 +6,7 @@
  * Bindings: DATA_BUCKET (R2). Secrets: NOTION_TOKEN (read-only integration), EXPORT_KEY.
  * Vars: DB_SMARTPHONE_APPS, DB_GTK_WEBSITES, DB_AI_TOOLS, DB_OPEN_SOURCE_ALTERNATIVES.
  */
-import publicTags from '../config/public-tags.json' with { type: 'json' };
+import publicTags from './public-tags.json' with { type: 'json' };
 import { createHandler } from './export-runner.js';
 
 const handle = createHandler({ rawTagConfig: publicTags });

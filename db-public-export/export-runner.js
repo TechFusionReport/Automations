@@ -89,7 +89,7 @@ export async function runExport({ env, tagConfig, fetchImpl, sleep, minIntervalM
   return { ok: Object.values(results).every((r) => r.status === 'written'), results };
 }
 
-/** Builds the Worker fetch handler. `rawTagConfig` is config/public-tags.json. */
+/** Builds the Worker fetch handler. `rawTagConfig` is db-public-export/public-tags.json. */
 export function createHandler({ rawTagConfig, fetchImpl, sleep, minIntervalMs } = {}) {
   const tagConfig = normalizeTagConfig(rawTagConfig);
   const names = new Set(DATASETS.map((d) => d.name));

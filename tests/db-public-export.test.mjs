@@ -135,7 +135,7 @@ test('slug collisions get numeric suffixes, independent of row order', () => {
 
 // ---- tag allowlist ----
 test('an empty allowlist publishes no tags (the shipped config)', async () => {
-  const shipped = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../config/public-tags.json', import.meta.url), 'utf8'));
+  const shipped = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../db-public-export/public-tags.json', import.meta.url), 'utf8'));
   assert.deepEqual(shipped, { allow: [], aliases: {} });
   const { output, tagCounts } = buildDataset(dataset('smartphone-apps'), [app()], normalizeTagConfig(shipped), NOW);
   assert.deepEqual(output.items[0].tags, []);
