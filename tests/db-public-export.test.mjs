@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DATASETS, ALLOWED_ITEM_KEYS, buildDataset, mapRow, sanitizeUrl, slugify, normalizeTagConfig, assertAllowedKeys,
+  DATASETS, ALLOWED_ITEM_KEYS, BADGE_KEYS, assertBadges, buildDataset, mapRow, sanitizeUrl, slugify, propertyNames, normalizeTagConfig, assertAllowedKeys,
 } from '../db-public-export/export-mapping.js';
 import { createNotionClient, fetchDatasetPages } from '../db-public-export/notion-query.js';
 import { createHandler, runExport, safeEqual, belowGuard } from '../db-public-export/export-runner.js';
@@ -11,6 +11,7 @@ import worker from '../db-public-export/db-public-export.js';
 const NO_TAGS = normalizeTagConfig({ allow: [], aliases: {} });
 const NOW = new Date('2026-11-21T12:00:00.000Z');
 const dataset = (name) => DATASETS.find((d) => d.name === name);
+const propertyNamesOf = (name) => propertyNames(dataset(name));
 
 // ---- fake Notion property / page builders ----
 const rich = (s) => [{ plain_text: s }];
@@ -34,6 +35,18 @@ const app = (over = {}) => page({
   Name: P.title('Good App'), Description: P.text('Does a thing'), Platform: P.multi(['Android', 'iOS']),
   'Paid/Free': P.select('Free'), Price: P.text('$0'), Rating: P.num(4.5), Tags: P.multi(['Finances', 'Notes']),
   URL: P.url('https://good.example/app'), Verdict: P.select('Keep'), Discontinued: P.check(false), ...FORBIDDEN, ...over,
+});
+
+// Self-Hosting Tools row. Note the exact Notion names: "App Name", "Desciption" (sic), "Editor's Choice".
+const SH_FORBIDDEN = {
+  Host: P.text('SENTINEL-HOST'), Status: P.select('SENTINEL-STATUS'), Notes: P.text('SENTINEL-NOTES'),
+  'Final Review': P.check(true), 'Sourced From': P.text('SENTINEL-SOURCED'), 'Date Added': { type: 'date', date: { start: '2026-01-01' } },
+  Evaluated: P.check(false), Description: P.text('SENTINEL-WRONG-SPELLING'),
+};
+const shRow = (over = {}) => page({
+  'App Name': P.title('Immich'), Website: P.url('https://immich.example/'), Desciption: P.text('Photo backup'),
+  Workflow: P.select('Media'), 'Alternative To': P.multi(['Google Photos', 'iCloud']), Why: P.multi(['Privacy', 'Cut cost']),
+  "Editor's Choice": P.check(false), 'Area J': P.check(false), ...SH_FORBIDDEN, ...over,
 });
 
 // ---- field mapping per database ----
@@ -69,6 +82,47 @@ test('open source alternatives map and never export Brief or OSAT Link', () => {
   const { output } = buildDataset(dataset('open-source-alternatives'), [row], NO_TAGS, NOW);
   assert.deepEqual(output.items, [{ id: 'libre', name: 'Libre', url: 'https://libre.example/', alternativeTo: 'Proprietary', tags: [] }]);
   assert.ok(!JSON.stringify(output).includes('SENTINEL'));
+});
+
+test('self-hosting tools map every field, with alternativeTo as an array', () => {
+  const { output } = buildDataset(dataset('self-hosting-tools'), [shRow()], NO_TAGS, NOW);
+  assert.deepEqual(output.items, [{
+    id: 'immich', name: 'Immich', url: 'https://immich.example/', description: 'Photo backup', category: 'Media',
+    alternativeTo: ['Google Photos', 'iCloud'], tags: [], badges: [],
+  }]);
+  assert.ok(!JSON.stringify(output).includes('SENTINEL'), 'Host/Status/Notes/etc. must never be read');
+});
+
+test('self-hosting tools: tags come only through the allowlist', () => {
+  const cfg = normalizeTagConfig({ allow: ['Privacy'], aliases: { 'Cut cost': 'Privacy' } });
+  assert.deepEqual(buildDataset(dataset('self-hosting-tools'), [shRow()], cfg, NOW).output.items[0].tags, ['Privacy']);
+  assert.deepEqual(buildDataset(dataset('self-hosting-tools'), [shRow({ Why: P.multi(['Productivity']) })], cfg, NOW).output.items[0].tags, []);
+  assert.deepEqual(buildDataset(dataset('self-hosting-tools'), [shRow()], NO_TAGS, NOW).output.items[0].tags, []);
+});
+
+test('self-hosting tools: no Evaluated filter, every row with a name and https url is exported', () => {
+  const pages = [
+    shRow({ 'App Name': P.title('A'), Evaluated: P.check(false) }),
+    shRow({ 'App Name': P.title('B'), Evaluated: P.check(true) }),
+    shRow({ 'App Name': P.title('C'), Status: P.select('Rejected'), 'Final Review': P.check(false) }),
+    shRow({ 'App Name': P.title('D'), Website: P.url('http://d.example') }),
+    shRow({ 'App Name': P.title('') }),
+    shRow({ 'App Name': P.title('E'), Website: P.url('ftp://e.example') }),
+  ];
+  const { output, skipped, read } = buildDataset(dataset('self-hosting-tools'), pages, NO_TAGS, NOW);
+  assert.deepEqual(output.items.map((i) => i.name), ['A', 'B', 'C', 'D']);
+  assert.equal(output.items[3].url, 'https://d.example/');
+  assert.deepEqual(skipped, { missing_name: 1, missing_or_invalid_url: 1 });
+  assert.equal(read, 6);
+  assert.ok(!dataset('self-hosting-tools').filterProps && !propertyNamesOf('self-hosting-tools').includes('Evaluated'));
+});
+
+test('self-hosting tools: the allowlist requested from Notion excludes every forbidden property', () => {
+  const names = propertyNamesOf('self-hosting-tools');
+  assert.deepEqual([...names].sort(), ['Alternative To', 'App Name', 'Area J', 'Desciption', "Editor's Choice", 'Website', 'Why', 'Workflow']);
+  for (const bad of ['Host', 'Status', 'Notes', 'Final Review', 'Sourced From', 'Date Added', 'Evaluated', 'Description']) {
+    assert.ok(!names.includes(bad), `${bad} must not be read`);
+  }
 });
 
 test('absent optional fields are omitted, not null or empty', () => {
@@ -155,6 +209,68 @@ test('a malformed tag config publishes nothing', () => {
   }
 });
 
+// ---- badges ----
+test('badges map the two checkboxes to fixed keys, in a fixed order', () => {
+  const badgesFor = (over) => buildDataset(dataset('self-hosting-tools'), [shRow(over)], NO_TAGS, NOW).output.items[0].badges;
+  assert.deepEqual(badgesFor({}), []);
+  assert.deepEqual(badgesFor({ "Editor's Choice": P.check(true) }), ['editors-choice']);
+  assert.deepEqual(badgesFor({ 'Area J': P.check(true) }), ['area-j']);
+  assert.deepEqual(badgesFor({ 'Area J': P.check(true), "Editor's Choice": P.check(true) }), ['editors-choice', 'area-j']);
+  assert.deepEqual(BADGE_KEYS, ['editors-choice', 'area-j']);
+});
+
+test('badges are matched on the exact property name (straight apostrophe), not look-alikes', () => {
+  const curly = shRow({ "Editor's Choice": undefined, 'Editor\u2019s Choice': P.check(true), 'area j': P.check(true) });
+  delete curly.properties["Editor's Choice"];
+  assert.deepEqual(buildDataset(dataset('self-hosting-tools'), [curly], NO_TAGS, NOW).output.items[0].badges, []);
+});
+
+test('a missing badge checkbox in the schema warns instead of failing', async () => {
+  const sh = dataset('self-hosting-tools');
+  const schemaWithout = (path, init) => path === '/v1/data_sources/ds-db-sh' && !init.body
+    ? Response.json({ properties: Object.fromEntries(['App Name', 'Website', 'Desciption', 'Workflow', 'Alternative To', 'Why', 'Area J'].map((n) => [n, { id: `id-${n}`, type: 'x' }])) })
+    : null;
+  const client = createNotionClient({ token: 't', fetchImpl: fakeNotion({ overrides: [schemaWithout] }), sleep, minIntervalMs: 0 });
+  const { pages, warnings } = await fetchDatasetPages(client, 'db-sh', sh);
+  assert.equal(pages.length, 1);
+  assert.deepEqual(warnings, ["missing_property:Editor's Choice"]);
+  // and the row still maps, with the missing checkbox treated as unticked
+  const row = shRow({ 'Area J': P.check(true) });
+  delete row.properties["Editor's Choice"];
+  assert.deepEqual(buildDataset(sh, [row], NO_TAGS, NOW).output.items[0].badges, ['area-j']);
+});
+
+test('badges are omitted for sources without badge checkboxes, even if the properties exist', () => {
+  const spoof = { "Editor's Choice": P.check(true), 'Area J': P.check(true) };
+  const rows = {
+    'smartphone-apps': app(spoof),
+    'gtk-websites': page({ Website: P.title('G'), URL: P.url('https://g.example'), ...spoof }),
+    'ai-tools': page({ 'AI Tool': P.title('A'), URL: P.url('https://a.example'), ...spoof }),
+    'open-source-alternatives': page({ Name: P.title('O'), 'Home Website': P.url('https://o.example'), ...spoof }),
+  };
+  for (const [name, row] of Object.entries(rows)) {
+    const [item] = buildDataset(dataset(name), [row], NO_TAGS, NOW).output.items;
+    assert.ok(!('badges' in item), `${name} must not export badges`);
+  }
+});
+
+test('badge count: rows with at least one badge', () => {
+  const pages = [shRow({ 'App Name': P.title('A') }), shRow({ 'App Name': P.title('B'), 'Area J': P.check(true) }),
+    shRow({ 'App Name': P.title('C'), 'Area J': P.check(true), "Editor's Choice": P.check(true) })];
+  assert.equal(buildDataset(dataset('self-hosting-tools'), pages, NO_TAGS, NOW).badged, 2);
+  assert.equal(buildDataset(dataset('gtk-websites'), [page({ Website: P.title('G'), URL: P.url('https://g.example') })], NO_TAGS, NOW).badged, 0);
+});
+
+test('badges may only contain the two allowed keys', () => {
+  assert.doesNotThrow(() => assertBadges({ badges: [] }));
+  assert.doesNotThrow(() => assertBadges({ badges: ['area-j', 'editors-choice'] }));
+  assert.doesNotThrow(() => assertBadges({}));
+  assert.throws(() => assertBadges({ badges: ['verified'] }), /unexpected_badge/);
+  assert.throws(() => assertBadges({ badges: ['area-j', 'Area J'] }), /unexpected_badge/);
+  assert.throws(() => assertBadges({ badges: 'area-j' }), /unexpected_badge/);
+  assert.ok(ALLOWED_ITEM_KEYS.includes('badges'));
+});
+
 // ---- output key allowlist ----
 test('exported item keys never leave the allowlist', () => {
   const everything = [
@@ -162,6 +278,7 @@ test('exported item keys never leave the allowlist', () => {
     ...buildDataset(dataset('gtk-websites'), [page({ Website: P.title('G'), URL: P.url('https://g.example'), Category: P.select('c'), Description: P.text('d'), ...FORBIDDEN })], NO_TAGS, NOW).output.items,
     ...buildDataset(dataset('ai-tools'), [page({ 'AI Tool': P.title('A'), URL: P.url('https://a.example'), ...FORBIDDEN })], NO_TAGS, NOW).output.items,
     ...buildDataset(dataset('open-source-alternatives'), [page({ Name: P.title('O'), 'Home Website': P.url('https://o.example'), ...FORBIDDEN })], NO_TAGS, NOW).output.items,
+    ...buildDataset(dataset('self-hosting-tools'), [shRow({ 'Area J': P.check(true) })], NO_TAGS, NOW).output.items,
   ];
   for (const item of everything) for (const key of Object.keys(item)) assert.ok(ALLOWED_ITEM_KEYS.includes(key), `unexpected key ${key}`);
   assert.throws(() => assertAllowedKeys({ id: 'x', name: 'x', url: 'https://x.example', notionId: 'leak' }), /unexpected_export_key:notionId/);
@@ -176,12 +293,13 @@ function fakeBucket(initial = {}) {
     async put(key, value, opts) { this.puts.push({ key, opts }); store.set(key, value); },
   };
 }
-const ENV_VARS = { DB_SMARTPHONE_APPS: 'db-sp', DB_GTK_WEBSITES: 'db-gtk', DB_AI_TOOLS: 'db-ai', DB_OPEN_SOURCE_ALTERNATIVES: 'db-oss' };
+const ENV_VARS = { DB_SMARTPHONE_APPS: 'db-sp', DB_GTK_WEBSITES: 'db-gtk', DB_AI_TOOLS: 'db-ai', DB_OPEN_SOURCE_ALTERNATIVES: 'db-oss', DB_SELF_HOSTING_TOOLS: 'db-sh' };
 const ROWS = {
   'ds-db-sp': () => [app()],
   'ds-db-gtk': () => [page({ Website: P.title('G'), URL: P.url('https://g.example') })],
   'ds-db-ai': () => [page({ 'AI Tool': P.title('A'), URL: P.url('https://a.example') })],
   'ds-db-oss': () => [page({ Name: P.title('O'), 'Home Website': P.url('https://o.example') })],
+  'ds-db-sh': () => [shRow()],
 };
 /** Routes Notion API calls. `overrides` lets a test change behaviour per path pattern. */
 function fakeNotion({ rows = ROWS, overrides = [], calls = [] } = {}) {
@@ -283,12 +401,12 @@ test('a schema without the name or url property fails that database', async () =
 // ---- export runner ----
 const exportEnv = (bucket, extra = {}) => ({ NOTION_TOKEN: 'test-token-not-real', DATA_BUCKET: bucket, ...ENV_VARS, ...extra });
 
-test('export writes all four files with the contract shape and contentType', async () => {
+test('export writes all five files with the contract shape and contentType', async () => {
   const bucket = fakeBucket();
   const { ok, results } = await runExport({ env: exportEnv(bucket), fetchImpl: fakeNotion(), ...runCtx() });
   assert.equal(ok, true);
-  assert.deepEqual(Object.keys(results), ['smartphone-apps', 'gtk-websites', 'ai-tools', 'open-source-alternatives']);
-  assert.deepEqual([...bucket.store.keys()].sort(), ['ai-tools.json', 'gtk-websites.json', 'open-source-alternatives.json', 'smartphone-apps.json']);
+  assert.deepEqual(Object.keys(results), ['smartphone-apps', 'gtk-websites', 'ai-tools', 'open-source-alternatives', 'self-hosting-tools']);
+  assert.deepEqual([...bucket.store.keys()].sort(), ['ai-tools.json', 'gtk-websites.json', 'open-source-alternatives.json', 'self-hosting-tools.json', 'smartphone-apps.json']);
   const file = JSON.parse(bucket.store.get('gtk-websites.json'));
   assert.deepEqual(Object.keys(file), ['updated', 'count', 'items']);
   assert.equal(file.updated, '2026-11-21T12:00:00.000Z');
@@ -323,7 +441,7 @@ test('a failed Notion call keeps the old file and is reported without leaking de
   assert.equal(ok, false);
   assert.deepEqual(results['ai-tools'], { status: 'error', error: 'notion_404_object_not_found' });
   assert.equal(bucket.store.get('ai-tools.json'), old);
-  assert.deepEqual(['smartphone-apps', 'gtk-websites', 'open-source-alternatives'].map((n) => results[n].status), ['written', 'written', 'written']);
+  assert.deepEqual(['smartphone-apps', 'gtk-websites', 'open-source-alternatives', 'self-hosting-tools'].map((n) => results[n].status), ['written', 'written', 'written', 'written']);
   assert.ok(!JSON.stringify(results).includes('db-ai'));
 });
 
@@ -352,7 +470,7 @@ const req = (path, init) => new Request(`https://www.techfusionreport.com${path}
 
 test('GET /data/{name}.json serves R2 with the required headers', async () => {
   const bucket = fakeBucket({ 'ai-tools.json': '{"updated":"x","count":0,"items":[]}' });
-  for (const name of ['smartphone-apps', 'gtk-websites', 'ai-tools', 'open-source-alternatives']) {
+  for (const name of ['smartphone-apps', 'gtk-websites', 'ai-tools', 'open-source-alternatives', 'self-hosting-tools']) {
     const b = fakeBucket({ [`${name}.json`]: '{"count":0}' });
     const res = await handler()(req(`/data/${name}.json`), { DATA_BUCKET: b });
     assert.equal(res.status, 200);
@@ -412,7 +530,7 @@ test('POST /data/_export requires the exact X-Export-Key', async () => {
   const body = await ok.json();
   assert.equal(body.ok, true);
   assert.equal(body.results['gtk-websites'].count, 1);
-  assert.equal(bucket.store.size, 4);
+  assert.equal(bucket.store.size, 5);
 });
 
 test('with EXPORT_KEY unset the export endpoint is closed, even for an empty header', async () => {

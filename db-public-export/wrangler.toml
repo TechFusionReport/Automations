@@ -13,5 +13,5 @@ keep_vars = true
 binding = "DATA_BUCKET"
 bucket_name = "tfr-public-data"
 
-# Secrets (NOTION_TOKEN, EXPORT_KEY) and the four DB_* variables are set in the dashboard.
+# Secrets (NOTION_TOKEN, EXPORT_KEY) and the five DB_* variables are set in the dashboard.
 # No values belong in this file.

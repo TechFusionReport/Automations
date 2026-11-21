@@ -8,7 +8,7 @@
  *
  * Environment (names only; set them in your shell, never paste them anywhere):
  *   TFR_NOTION_READONLY_TOKEN
- *   TFR_DB_SMARTPHONE_APPS  TFR_DB_GTK_WEBSITES  TFR_DB_AI_TOOLS  TFR_DB_OPEN_SOURCE_ALTERNATIVES
+ *   TFR_DB_SMARTPHONE_APPS  TFR_DB_GTK_WEBSITES  TFR_DB_AI_TOOLS  TFR_DB_OPEN_SOURCE_ALTERNATIVES  TFR_DB_SELF_HOSTING_TOOLS
  *
  * Usage: node scripts/db-export-dry-run.mjs
  */
@@ -36,12 +36,14 @@ for (const dataset of DATASETS) {
   if (!dbId) { console.log(`SKIPPED: ${envName} is not set`); failed++; continue; }
   try {
     const { pages, warnings } = await fetchDatasetPages(client, dbId, dataset);
-    const { output, read, skipped, tagCounts } = buildDataset(dataset, pages, tagConfig);
+    const { output, read, skipped, tagCounts, badged } = buildDataset(dataset, pages, tagConfig);
     await writeFile(new URL(`${dataset.name}.json`, outDir), JSON.stringify(output, null, 2));
     const skippedTotal = Object.values(skipped).reduce((a, b) => a + b, 0);
     console.log(`rows read: ${read}`);
     console.log(`rows exported: ${output.count}`);
     console.log(`rows skipped: ${skippedTotal}${skippedTotal ? ' (' + Object.entries(skipped).map(([k, v]) => `${k}: ${v}`).join(', ') + ')' : ''}`);
+    if (dataset.badgeProps) console.log(`rows with badges: ${badged}`);
+    else console.log('badges: not applicable for this database');
     if (warnings.length) console.log(`schema warnings: ${warnings.join(', ')}`);
     const tags = [...tagCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, TOP_TAGS);
     if (!dataset.fields.tags) console.log('tags: not exported for this database');

@@ -74,7 +74,7 @@ async function exportDataset(dataset, { env, client, tagConfig, now }) {
   }
 }
 
-/** Runs the export for all four databases, sequentially (Notion rate limits). */
+/** Runs the export for all databases, sequentially (Notion rate limits). */
 export async function runExport({ env, tagConfig, fetchImpl, sleep, minIntervalMs, now = () => new Date() }) {
   const results = {};
   if (!env.NOTION_TOKEN || !env.DATA_BUCKET) {
