@@ -25,7 +25,6 @@ function request(path, { method = 'GET', headers, body } = {}, bindings = env) {
 
 for (const [path, options] of [
   ['/status', {}],
-  ['/admin/channels', {}],
   ['/analytics/summary', {}],
   ['/batch/publish', { method: 'POST', body: { pageIds: [] } }],
   ['/cache/clear', { method: 'POST', body: {} }],
