@@ -4,6 +4,7 @@
 import DiscoveryAgent    from './agents/discovery.js';
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
+import { verifyAccessRequest } from './ops/access.js';
 import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
@@ -42,6 +43,25 @@ function json(data, status = 200) {
   });
 }
 
+// Compare fixed-size digests so the comparison does not exit on a partial match.
+async function matchesWorkerSecret(request, env) {
+  const provided = request.headers.get('X-Worker-Secret');
+  const expected = env.WORKER_SHARED_SECRET;
+  if (!provided || typeof expected !== 'string' || !expected) return false;
+
+  const encoder = new TextEncoder();
+  const [actualHash, expectedHash] = await Promise.all(
+    [provided, expected].map(async value =>
+      new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value)))
+    )
+  );
+  let difference = 0;
+  for (let i = 0; i < actualHash.length; i++) {
+    difference |= actualHash[i] ^ expectedHash[i];
+  }
+  return difference === 0;
+}
+
 // ─── Main Export ─────────────────────────────────────────────────────────────
 
 export default {
@@ -51,6 +71,13 @@ export default {
     const opsResponse = await handleOps(request, env, ctx);
     if (opsResponse) return opsResponse;
 
+    const { pathname } = new URL(request.url);
+    if (pathname !== '/health' && !pathname.startsWith('/ops/')) {
+      const authorized = await matchesWorkerSecret(request, env)
+        || (await verifyAccessRequest(request, env).catch(() => ({ ok: false }))).ok;
+      if (!authorized) return json({ error: 'Unauthorized' }, 401);
+    }
+
     const router = new Router();
 
     // ── Core pipeline endpoints ────────────────────────────────────────────
@@ -58,34 +85,18 @@ export default {
       return await new DiscoveryAgent(env).run();
     });
 
-    router.post('/enhance', async () =>
-      json({
-        error: 'Worker enhancement retired',
-        owner: 'n8n',
-        workflowId: 'YF1dipB0E8BSF5Ae'
-      }, 410)
-    );
-
     router.post('/publish', async (req, env) => {
       const data = await req.json();
       return await new PublishingAgent(env).publish(data);
     });
 
     // ── Manual poll triggers (for testing without waiting for cron) ────────
-    router.post('/admin/enhance-poll', async () =>
-      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
-    );
-
     router.post('/admin/publish-poll', async (req, env) => {
       const result = await new PublisherPoller(env).run();
       return json(result);
     });
 
     // Single record triggers (for manual testing a specific page)
-    router.post('/admin/enhance-single', async () =>
-      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
-    );
-
     router.post('/admin/publish-single', async (req, env) => {
       const { pageId } = await req.json();
       if (!pageId) return json({ error: 'pageId required' }, 400);
@@ -124,37 +135,6 @@ export default {
       await agent.invalidateCreatorCache();
       await agent.loadCreatorCache({});
       return json({ status: 'creators refreshed' });
-    });
-
-    // TEMPORARY DIAGNOSTIC — remove after use
-    router.post('/admin/diag/notion-token', async (req, env) => {
-      const secrets = await getSecrets(env);
-      const token = secrets.notion_token || '';
-      const masked = token.length > 14
-        ? token.slice(0, 10) + '...' + token.slice(-4)
-        : token ? '[too short to mask]' : '[missing]';
-      const notionRes = await fetch(
-        'https://api.notion.com/v1/databases/0403b4267a54467a8bfd7dfb2cc4a7a8/query',
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Notion-Version': '2022-06-28',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ page_size: 1 }),
-        }
-      );
-      const body = await notionRes.json();
-      const firstTitle = body.results?.[0]?.properties?.['Content Creators']?.title?.[0]?.plain_text ?? null;
-      return json({
-        token_masked: masked,
-        token_prefix: token.slice(0, 4),
-        notion_status: notionRes.status,
-        notion_ok: notionRes.ok,
-        first_record_title: firstTitle,
-        error: notionRes.ok ? null : body.message ?? body,
-      });
     });
 
     // Apply Option D template blocks to Content Catalog v2 records.
@@ -372,10 +352,6 @@ export default {
     });
 
     // ── Batch operations ───────────────────────────────────────────────────
-    router.post('/batch/enhance', async () =>
-      json({ error: 'Worker enhancement retired', owner: 'n8n' }, 410)
-    );
-
     router.post('/batch/publish', async (req, env) => {
       const { pageIds } = await req.json();
       const results = [];
