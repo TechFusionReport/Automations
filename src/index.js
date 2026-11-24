@@ -104,32 +104,6 @@ export default {
       return json(result);
     });
 
-    // ── Channel management ─────────────────────────────────────────────────
-    router.get('/admin/channels', async (req, env) => {
-      const channels = await env.CONTENT_KV.get('channels_config');
-      return new Response(channels || '[]', { headers: { 'Content-Type': 'application/json' } });
-    });
-
-    router.post('/admin/channels', async (req, env) => {
-      const channels = await req.json();
-      if (!Array.isArray(channels)) return json({ error: 'Must be an array' }, 400);
-      await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
-      return json({ status: 'saved', count: channels.length });
-    });
-
-    router.post('/admin/channels/refresh', async (req, env) => {
-      try {
-        const response = await fetch(
-          'https://raw.githubusercontent.com/TechFusionReport/Automations/main/config/channels.json'
-        );
-        const channels = await response.json();
-        await env.CONTENT_KV.put('channels_config', JSON.stringify(channels));
-        return json({ status: 'refreshed', count: channels.length });
-      } catch (e) {
-        return json({ error: e.message }, 500);
-      }
-    });
-
     router.post('/admin/creators/refresh', async (req, env) => {
       const agent = new DiscoveryAgent(env);
       await agent.invalidateCreatorCache();
@@ -290,12 +264,11 @@ export default {
 
     // ── Status & health ────────────────────────────────────────────────────
     router.get('/status', async (req, env) => {
-      const [lastDiscovery, lastEnhancePoll, lastPublishPoll, channels, creators] =
+      const [lastDiscovery, lastEnhancePoll, lastPublishPoll, creators] =
         await Promise.all([
           env.CONTENT_KV.get('last_discovery'),
           env.CONTENT_KV.get('last_enhance_poll'),
           env.CONTENT_KV.get('last_publish_poll'),
-          env.CONTENT_KV.get('channels_config'),
           env.CONTENT_KV.get('creator_cache'),
         ]);
       return json({
@@ -305,7 +278,6 @@ export default {
         lastDiscovery:   lastDiscovery   ? JSON.parse(lastDiscovery)   : null,
         lastEnhancePoll: lastEnhancePoll ? JSON.parse(lastEnhancePoll) : null,
         lastPublishPoll: lastPublishPoll ? JSON.parse(lastPublishPoll) : null,
-        channelsLoaded:  channels ? JSON.parse(channels).length : 0,
         creatorsCached:  creators ? JSON.parse(creators).length : 0,
         timestamp:       new Date().toISOString()
       });
@@ -378,10 +350,6 @@ export default {
         switch (type) {
           case 'discover':
             await new DiscoveryAgent(env).run(); break;
-          case 'enhance':
-          case 'research': case 'structure': case 'factcheck': case 'finalize':
-            console.warn(`Ignoring retired Worker enhancement message [${type}]; n8n owns enhancement`);
-            break;
           case 'publish':
             await new PublisherPoller(env).runSingle(data.notionPageId); break;
           case 'crosspost':
