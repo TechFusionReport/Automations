@@ -27,7 +27,6 @@ for (const [path, options] of [
   ['/status', {}],
   ['/admin/channels', {}],
   ['/analytics/summary', {}],
-  ['/webhook/github', { method: 'POST', body: {} }],
   ['/batch/publish', { method: 'POST', body: { pageIds: [] } }],
   ['/cache/clear', { method: 'POST', body: {} }],
 ]) {

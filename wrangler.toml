@@ -57,7 +57,8 @@ PROMETHEUS_TIMEOUT_MS = "5000"
 GRAFANA_BASE_URL = "https://grafana.techfusionreport.com"
 
 [triggers]
-crons = ["0 */6 * * *", "0 9 * * 1", "0 2 1 * *", "*/30 * * * *"]
+# Crons paused until /ops receipt gates are live. Re-enable in the gate PR.
+crons = []
 
 [env.preview]
 name = "techfusion-api-preview"
