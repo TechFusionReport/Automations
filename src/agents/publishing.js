@@ -195,20 +195,6 @@ export class PublishingAgent {
     });
   }
 
-  async markPrClosedUnmerged(pageId, prUrl, secrets) {
-    const token = secrets.notion_token;
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-      method: 'PATCH',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
-      body: JSON.stringify({
-        properties: {
-          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.needsReReview } },
-          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: `Publish PR was closed without merging: ${prUrl}` } }] }
-        }
-      })
-    });
-  }
-
   async publish({
     notionPageId,
     title,
