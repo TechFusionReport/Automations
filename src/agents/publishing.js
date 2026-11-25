@@ -6,6 +6,15 @@ import { normalizePageId } from '../utils/ops-receipts.js';
 export const AI_ASSISTED_LABEL = 'AI-assisted: drafted by AI from the source material, then reviewed and approved by a human editor before publishing. <a href="/how-tfr-is-made.html">How TFR is made</a>';
 const ARTICLE_PATH = /^_posts\/(\d{4}-\d{2}-\d{2})-[a-z0-9-]+\.html$/;
 
+const SUMMARY_ENTITIES = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&#039;': "'", '&#39;': "'", '&nbsp;': ' ',
+};
+
+function decodeSummaryEntities(text) {
+  // Decode one HTML text layer. The template still escapes this plain text.
+  return text.replace(/&(?:amp|lt|gt|quot|apos|#0?39|nbsp);/g, entity => SUMMARY_ENTITIES[entity]);
+}
+
 export class PublishingAgent {
   constructor(env) {
     this.env = env;
@@ -43,15 +52,12 @@ export class PublishingAgent {
       .replace(/'/g, '&#039;');
   }
 
-  stripHtml(value = '') {
-    return String(value)
+  stripHtml(value = '', decodeEntities = text => text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')) {
+    const text = String(value)
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/<[^>]+>/g, ' ');
+    return decodeEntities(text).replace(/\s+/g, ' ').trim();
   }
 
   async getSecrets() {
@@ -183,15 +189,18 @@ export class PublishingAgent {
     }) : null;
   }
 
-  async buildPostsJson(metadata, baseSha, secrets) {
+  async readPostsJson(baseSha, secrets) {
     const headers = this.githubHeaders(secrets.github_pat);
     const apiBase = `${this.repoApi}/contents/posts.json`;
     const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(baseSha)}`, { headers });
     if (!existing.ok) throw new Error('Could not read Website posts index');
     const data = await existing.json();
-    let posts = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
+    return JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
+  }
+
+  async buildPostsJson(metadata, baseSha, secrets, targetPosts) {
     const newSlug = `${metadata.date}-${metadata.slug}`;
-    posts = posts.filter(p => p.slug !== newSlug);
+    const posts = (targetPosts ?? await this.readPostsJson(baseSha, secrets)).filter(p => p.slug !== newSlug);
     posts.unshift({
       title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
       category: metadata.category, subcategory: metadata.subcategory,
@@ -346,8 +355,10 @@ export class PublishingAgent {
     }
     if (!content) return { blocked: true, reason: 'missing_draft' };
 
+    const baseSha = await this.getBaseCommit(secrets);
+    const targetPosts = await this.readPostsJson(baseSha, secrets);
     const contentWithAffiliates = this.affiliateInserter.insert(content);
-    metadata.relatedArticles = await this.findRelatedArticles(metadata);
+    metadata.relatedArticles = await this.findRelatedArticles(metadata, targetPosts, baseSha, secrets);
     const template = await this.fetchWebsiteTemplate(secrets);
     const html = this.convertToHTML(contentWithAffiliates, metadata, template);
 
@@ -367,8 +378,7 @@ export class PublishingAgent {
     const publishBranch = legacyRef.ok ? legacyBranch : branch;
     const concurrent = await this.findPublishPR(publishBranch, secrets);
     if (concurrent) return this.completePublishPR(notionPageId, concurrent, secrets, verify);
-    const baseSha = await this.getBaseCommit(secrets);
-    const posts = await this.buildPostsJson(metadata, baseSha, secrets);
+    const posts = await this.buildPostsJson(metadata, baseSha, secrets, targetPosts);
     const headSha = await this.stagePublishBranch(publishBranch, path, html, posts, baseSha, secrets);
 
     const beforePR = await authorize();
@@ -387,7 +397,13 @@ export class PublishingAgent {
     return this.completePublishPR(notionPageId, state, secrets, verify);
   }
 
-  async findRelatedArticles(metadata) {
+  async findRelatedArticles(metadata, targetPosts, baseSha, secrets) {
+    const indexed = new Map(targetPosts
+      .filter(post => typeof post?.url === 'string' && post.url.startsWith('/')
+        && ARTICLE_PATH.test(post.url.slice(1)))
+      .map(post => [post.url, post]));
+    if (!indexed.size) return [];
+
     try {
       const list = await this.env.CONTENT_KV.list({ prefix: 'article:', limit: 100 });
       const candidates = [];
@@ -397,6 +413,9 @@ export class PublishingAgent {
         if (!raw) continue;
         const article = JSON.parse(raw);
         if (!article?.slug || article.slug === metadata.slug) continue;
+        const url = `/_posts/${article.date}-${article.slug}.html`;
+        const post = indexed.get(url);
+        if (!post) continue;
 
         let score = 0;
         if (article.category === metadata.category) score += 4;
@@ -405,15 +424,24 @@ export class PublishingAgent {
         score += overlap * 2;
         if (metadata.focusKeyword && String(article.focusKeyword || '').toLowerCase() === String(metadata.focusKeyword).toLowerCase()) score += 3;
 
-        if (score > 0) candidates.push({ ...article, relevanceScore: score });
+        if (score > 0) candidates.push({ ...article, post, url, relevanceScore: score });
       }
+      if (!candidates.length) return [];
+
+      const response = await fetch(`${this.repoApi}/contents/_posts?ref=${encodeURIComponent(baseSha)}`, {
+        headers: this.githubHeaders(secrets.github_pat),
+      });
+      if (!response.ok) throw new Error('Could not read Website article files');
+      const files = new Set((await response.json()).filter(item => item.type === 'file').map(item => item.path));
 
       return candidates
+        .filter(article => files.has(article.url.slice(1)))
         .sort((a, b) => Number(b.category === metadata.category) - Number(a.category === metadata.category) || b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
         .slice(0, 4)
         .map(article => ({
-          title: article.title,
-          url: article.canonicalUrl || `https://www.techfusionreport.com/_posts/${article.date}-${article.slug}.html`
+          title: article.post.title || article.title,
+          // Keep the target index path relative to the article's site, including Pages project prefixes.
+          url: `..${article.url}`,
         }));
     } catch {
       console.warn('Related article lookup failed');
@@ -562,7 +590,7 @@ export class PublishingAgent {
   }
 
   generateTLDR(content) {
-    const text = this.stripHtml(content);
+    const text = this.stripHtml(content, decodeSummaryEntities);
     return text.length > 200 ? `${text.substring(0, 197).trim()}...` : text;
   }
 

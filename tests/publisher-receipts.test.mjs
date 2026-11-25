@@ -11,8 +11,9 @@ const now = Date.UTC(2026, 0, 4);
 const template = `<!doctype html><script type="application/ld+json">{}</script>
 <article class="article-shell article-template-shell">
 <figure class="article-hero-media"></figure><figure class="article-inline-art"></figure>
+<aside class="tldr-box">{{TLDR}}</aside>
 <section class="article-body article-content">{{BODY_HTML}}</section>
-<section class="article-body article-content">{{BODY_CONTINUED_HTML}}</section></article>`;
+<section class="article-body article-content">{{BODY_CONTINUED_HTML}}</section><section>{{RELATED_ARTICLES}}</section></article>`;
 const rich = content => ({ rich_text: [{ text: { content } }] });
 const status = name => ({ status: { name } });
 const head = 'a'.repeat(40);
@@ -51,7 +52,7 @@ function fixture(t, target = {}) {
     [P.category]: { select: { name: 'Technology' } },
     [P.seoScore]: { number: 85 },
   } };
-  const gh = { pr: null, ref: null, merge: true, writes: [], trees: [], commits: 0 };
+  const gh = { pr: null, ref: null, merge: true, writes: [], trees: [], commits: 0, posts: [], files: [] };
   const queries = [];
   const patches = [];
   const calls = [];
@@ -109,7 +110,11 @@ function fixture(t, target = {}) {
     }
     if (endpoint === '/contents/posts.json') {
       assert.equal(url.searchParams.get('ref'), baseSha);
-      return ok({ content: btoa('[]') });
+      return ok({ content: Buffer.from(JSON.stringify(gh.posts)).toString('base64') });
+    }
+    if (endpoint === '/contents/_posts') {
+      assert.equal(url.searchParams.get('ref'), baseSha);
+      return ok(gh.files);
     }
     if (endpoint === `/git/ref/heads/${branch}`) return ok({ object: { sha: baseSha } });
     if (endpoint.startsWith('/git/ref/heads/publish/')) {
@@ -285,4 +290,56 @@ test('rerendering the article body preserves exactly one leading AI disclosure',
   const second = render(body);
   assert.equal(second.split(AI_ASSISTED_LABEL).length - 1, 1);
   assert.match(second, /<section class="article-body article-content"><p class="ai-assisted-disclosure">AI-assisted:/);
+});
+
+
+test('TFR Read summary escapes punctuation and literal script text exactly once', () => {
+  const agent = new PublishingAgent({});
+  const metadata = { date: '2026-01-04', title: 'Sample', slug: 'sample', category: 'Technology' };
+  const text = "TFR's tips & tricks, \"quoted\" with <script>alert('example')</script> and &lt;literal&gt;.";
+  const html = agent.convertToHTML(text, metadata, template);
+  const summary = html.match(/<aside class="tldr-box">([^]*?)<\/aside>/)[1];
+  assert.equal(summary, 'TFR&#039;s tips &amp; tricks, &quot;quoted&quot; with &lt;script&gt;alert(&#039;example&#039;)&lt;/script&gt; and &amp;lt;literal&amp;gt;.');
+  assert.ok(!summary.includes('<script>'));
+
+  const trustedHtml = "<p>TFR&#39;s tips &amp; tricks with &quot;quotes&quot;</p><script>not summary text</script>";
+  const trusted = agent.convertToHTML(trustedHtml, metadata, template);
+  assert.equal(trusted.match(/<aside class="tldr-box">([^]*?)<\/aside>/)[1],
+    'TFR&#039;s tips &amp; tricks with &quot;quotes&quot;');
+});
+
+test('TFR Read truncates decoded summary text and keeps the ellipsis', () => {
+  const agent = new PublishingAgent({});
+  const metadata = { date: '2026-01-04', title: 'Sample', slug: 'sample', category: 'Technology' };
+  const html = agent.convertToHTML(`TFR's ${'x'.repeat(250)}`, metadata, template);
+  assert.equal(html.match(/<aside class="tldr-box">([^]*?)<\/aside>/)[1], `TFR&#039;s ${'x'.repeat(191)}...`);
+});
+
+test('related cards need both a target index entry and an article file at the resolved base', async t => {
+  const f = fixture(t, {
+    WEBSITE_REPO_OWNER: 'example-owner', WEBSITE_REPO_NAME: 'example-preview', WEBSITE_REPO_BRANCH: 'release/preview',
+  });
+  const related = ['stale-cache-only', 'missing-file', 'available'];
+  const article = slug => ({
+    slug, title: `Cached ${slug}`, date: '2025-12-01', category: 'Technology',
+    canonicalUrl: `https://production.example/_posts/2025-12-01-${slug}.html`,
+  });
+  const path = slug => `_posts/2025-12-01-${slug}.html`;
+  f.env.CONTENT_KV.list = async () => ({ keys: related.map(name => ({ name })) });
+  f.env.CONTENT_KV.get = async key => related.includes(key) ? JSON.stringify(article(key)) : null;
+  f.gh.posts = [
+    { title: 'Missing file', url: `/${path('missing-file')}` },
+    { title: 'Current index title', url: `/${path('available')}` },
+  ];
+  f.gh.files = [
+    { type: 'file', path: path('available') },
+    { type: 'file', path: path('stale-cache-only') },
+  ];
+  await f.approve(1, 2);
+  assert.equal((await f.run()).processed, 1);
+  const html = f.gh.trees[0][0].content;
+  assert.match(html, /<a class="post-card" href="\.\.\/_posts\/2025-12-01-available\.html"><h3>Current index title<\/h3><\/a>/);
+  assert.doesNotMatch(html, /stale-cache-only|missing-file|production\.example/);
+  assert.equal(f.calls.filter(call => call.endpoint === '/contents/posts.json').length, 1);
+  assert.equal(f.calls.filter(call => call.endpoint === '/contents/_posts').length, 1);
 });
