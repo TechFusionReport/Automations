@@ -1,3 +1,4 @@
+import { renderMonitoring } from './monitoring.js';
 // TechFusion Ops Center — dashboard client.
 // Loaded as <script type="module">. Talks to the Access-gated Worker API at
 // /ops/api/* (same origin, so the Cloudflare Access cookie rides along).
@@ -43,9 +44,12 @@ const COLOR_BY_STATUS = {
 };
 
 // ── pure helpers (exported for tests) ────────────────────────────────────────
+/** Returns the visual color token associated with a workflow status. */
 export function statusColor(statusName) {
   return COLOR_BY_STATUS[statusName] || 'gray';
 }
+
+/** Finds the active pipeline stage with the largest record count. */
 
 export function bottleneckStage(counts = {}) {
   let best = null;
@@ -55,6 +59,8 @@ export function bottleneckStage(counts = {}) {
   }
   return best;
 }
+
+/** Formats an ISO timestamp as a compact relative age. */
 
 export function timeAgo(iso, now = Date.now) {
   if (!iso) return '—';
@@ -69,6 +75,8 @@ export function timeAgo(iso, now = Date.now) {
   return `${Math.floor(h / 24)}d`;
 }
 
+/** Formats a millisecond duration for dashboard display. */
+
 export function fmtDuration(ms) {
   if (ms == null || Number.isNaN(ms)) return '—';
   const totalMin = Math.floor(ms / 60000);
@@ -78,6 +86,8 @@ export function fmtDuration(ms) {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+/** Escapes untrusted text before interpolation into dashboard markup. */
+
 export function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -86,6 +96,19 @@ export function escapeHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+export function safeDashboardUrl(rawUrl, baseUrl = 'https://techfusionreport.com/') {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  try {
+    const base = new URL(baseUrl);
+    const url = new URL(rawUrl, base);
+    return url.protocol === 'https:' || url.origin === base.origin ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Converts a supported YouTube URL into a privacy-enhanced embed URL. */
 
 export function youtubeEmbedUrl(rawUrl) {
   try {
@@ -106,20 +129,23 @@ export function youtubeEmbedUrl(rawUrl) {
   }
 }
 
+/** Builds safe media markup for YouTube, Vimeo, direct video, or link fallback. */
+
 function videoEmbed(url) {
   let embed = youtubeEmbedUrl(url);
+  const safeMediaUrl = safeDashboardUrl(url);
   try {
     const u = new URL(url);
     if (!embed && /(^|\.)vimeo\.com$/i.test(u.hostname)) {
       const id = u.pathname.split('/').filter(Boolean).find(x => /^\d+$/.test(x));
       if (id) embed = `https://player.vimeo.com/video/${id}`;
     }
-    if (!embed && /\.(mp4|webm|ogg)$/i.test(u.pathname)) {
-      return `<video class="video-direct" controls preload="metadata" src="${escapeHtml(url)}"></video>`;
+    if (!embed && safeMediaUrl && /\.(mp4|webm|ogg)$/i.test(u.pathname)) {
+      return `<video class="video-direct" controls preload="metadata" src="${escapeHtml(safeMediaUrl)}"></video>`;
     }
   } catch { /* fallback below */ }
-  if (!embed) return url
-    ? `<div class="video-fallback"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
+  if (!embed) return safeMediaUrl
+    ? `<div class="video-fallback"><a href="${escapeHtml(safeMediaUrl)}" target="_blank" rel="noopener">Open original video ↗</a></div>`
     : '<div class="state empty">No original video URL available.</div>';
   return `<div class="video-frame"><iframe src="${embed}" title="Original source video" loading="lazy"
     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -135,6 +161,9 @@ if (typeof document !== 'undefined') {
 
   const state = {
     overview: null,
+    commandCenter: null,
+    observability: null,
+    attention: null,
     queue: [],
     drafts: [],
     draftDetails: {},
@@ -148,10 +177,14 @@ if (typeof document !== 'undefined') {
     draftQuery: { q: '', sort: 'oldest', featured: '' },
     dirtyDraft: false,
   };
+  /** Returns the first matching element within an optional root. */
   const $ = (sel, root = document) => root.querySelector(sel);
+  /** Returns the root element for a named dashboard view. */
   const view = (name) => $(`#view-${name}`);
 
-  async function api(path, opts = {}) {
+  /** Sends an authenticated same-origin request to the Ops Worker API. */
+
+  async function api(path, opts = {}, expectedStatus = null) {
     const res = await fetch(`${API}${path}`, {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -159,26 +192,43 @@ if (typeof document !== 'undefined') {
     });
     let body = null;
     try { body = await res.json(); } catch { /* non-JSON */ }
-    if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
+    if (!res.ok || (expectedStatus !== null && res.status !== expectedStatus)) throw new Error(body?.error || `Request failed (${res.status})`);
     return body;
   }
 
+  /** Builds a loading-state fragment. */
+
   const loading = (msg = 'Loading…') => `<div class="state loading"><span class="spinner"></span>${escapeHtml(msg)}</div>`;
+  /** Builds an empty-state fragment. */
   const empty = (msg) => `<div class="state empty">${escapeHtml(msg)}</div>`;
+  /** Builds an escaped error-state fragment. */
   const errorState = (msg) => `<div class="state error">⚠ ${escapeHtml(msg)}</div>`;
+  /** Builds monospace markup for a nullable numeric value. */
   const num = (n) => `<span class="mono">${n == null ? '—' : n}</span>`;
+  /** Builds a new-tab link for a valid URL, otherwise inert text (same URL rules as safeDashboardUrl). */
+  const externalLink = (url, label, className = '', { noreferrer = false } = {}) => {
+    const href = safeDashboardUrl(url, window.location.href);
+    const cls = className ? ` class="${escapeHtml(className)}"` : '';
+    return href
+      ? `<a${cls} href="${escapeHtml(href)}" target="_blank" rel="noopener${noreferrer ? ' noreferrer' : ''}">${escapeHtml(label)}</a>`
+      : `<span${cls}>${escapeHtml(label)}</span>`;
+  };
 
   // ── navigation ─────────────────────────────────────────────────────────────
+  /** Activates a dashboard view and loads its current data. */
   function switchView(name) {
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('current', n.dataset.view === name));
     view(name)?.classList.add('active');
     if (name === 'dashboard') loadDashboard();
+    if (name === 'infrastructure') loadInfrastructure();
     if (name === 'queue') loadQueue();
     if (name === 'drafts') loadDrafts();
     if (name === 'board') loadBoard();
     if (name === 'errors') loadErrors();
   }
+
+  /** Refreshes navigation badges from the cached overview response. */
 
   function setBadges() {
     const k = state.overview?.kpis;
@@ -189,26 +239,157 @@ if (typeof document !== 'undefined') {
   }
 
   // ── dashboard ──────────────────────────────────────────────────────────────
+  /** Loads and renders the operations overview. */
   async function loadDashboard() {
     const root = view('dashboard');
     root.innerHTML = loading('Loading operations…');
     try {
       const o = await api('/overview');
+      const commandCenter = await api('/command-center').catch((error) => ({
+        generatedAt: o.generatedAt,
+        tasks: { status: 'error', reason: error.message, items: [] },
+        pullRequests: { status: 'error', reason: error.message, items: [] },
+        cloudflare: { status: 'error', reason: error.message },
+        services: [],
+        attention: [],
+      }));
+      const attention = await api('/attention').catch((error) => ({
+        generatedAt: o.generatedAt,
+        count: 0,
+        criticalCount: 0,
+        items: [],
+        error: error.message,
+      }));
       state.overview = o;
+      state.commandCenter = commandCenter;
+      state.attention = attention;
       setBadges();
-      root.innerHTML = renderDashboard(o);
+      root.innerHTML = renderDashboard(o, commandCenter, attention);
     } catch (e) {
       root.innerHTML = errorState(e.message);
     }
   }
+
+  /** Builds the markup for one key-performance indicator card. */
 
   function kpiCard(label, value, sub) {
     return `<div class="kpi"><div class="kpi-label">${escapeHtml(label)}</div>
       <div class="kpi-value mono">${value}</div>${sub ? `<div class="kpi-sub">${sub}</div>` : ''}</div>`;
   }
 
-  function renderDashboard(o) {
+  // ── infrastructure / observability ───────────────────────────────────────────
+  /** Loads the authenticated Prometheus summary for the Infrastructure view. */
+  async function loadInfrastructure() {
+    const root = view('infrastructure');
+    root.innerHTML = loading('Loading Prometheus telemetry…');
+    try {
+      state.observability = await api('/observability');
+      root.innerHTML = renderInfrastructure(state.observability);
+      try {
+        const monitoring = await api('/legacy-monitoring');
+        root.insertAdjacentHTML('beforeend', renderMonitoring(monitoring));
+      } catch (monitorError) {
+        root.insertAdjacentHTML('beforeend', renderMonitoring({ status: 'unavailable', reason: monitorError.message }));
+      }
+    } catch (e) {
+      root.innerHTML = `<header class="page-head"><h1>Infrastructure</h1></header>${errorState(e.message)}`;
+    }
+  }
+
+  /** Formats an average percentage from a possibly missing metric series. */
+  function metricValue(points = []) {
+    const values = (Array.isArray(points) ? points : []).flatMap((point) => {
+      const rawValue = point?.value;
+      if (rawValue === null || rawValue === undefined || rawValue === '') return [];
+      const value = Number(rawValue);
+      return Number.isFinite(value) ? [value] : [];
+    });
+    if (!values.length) return '—';
+    return `${(values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1)}%`;
+  }
+
+  /** Builds the Infrastructure view without turning unavailable data into health. */
+  function renderInfrastructure(data) {
+    const targets = data?.targets || { items: [] };
+    const alerts = data?.alerts || { items: [] };
+    const status = data?.status || 'unavailable';
+    const grafana = safeDashboardUrl(data?.grafana?.url, window.location.href);
+    const hasNumber = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    const hasTargetCounts = hasNumber(targets.healthy) && hasNumber(targets.total);
+    const hasAlertCount = hasNumber(alerts.firing);
+    const targetValue = hasTargetCounts ? `${Number(targets.healthy)}/${Number(targets.total)}` : '—';
+    const targetSub = hasTargetCounts
+      ? (hasNumber(targets.down) && Number(targets.down) > 0 ? `${Number(targets.down)} down` : 'All reporting')
+      : 'Unavailable';
+    const alertValue = hasAlertCount ? Number(alerts.firing) : '—';
+    const alertSub = hasAlertCount ? (Number(alerts.firing) > 0 ? 'Needs attention' : 'None firing') : 'Unavailable';
+    const targetItems = Array.isArray(targets.items) ? targets.items : [];
+    const rows = targetItems.length
+      ? targetItems.map((target) => `<tr><td>${escapeHtml(target.job || 'unknown')}</td><td class="mono">${escapeHtml(target.instance || '—')}</td><td><span class="pill ${target.health === 'up' ? 'green' : 'red'}"></span>${escapeHtml(target.health)}</td><td class="muted">${escapeHtml(target.lastError || '—')}</td><td class="mono muted">${timeAgo(target.lastScrape)}</td></tr>`).join('')
+      : '<tr><td colspan="5" class="muted">No scrape-target data available.</td></tr>';
+    return `<header class="page-head"><div><h1>Infrastructure</h1><p class="muted">Prometheus telemetry · Grafana dashboards</p></div>
+      <div class="header-actions"><span class="badge ${escapeHtml(status)}">${escapeHtml(status)}</span>${grafana ? `<a class="btn ghost" href="${escapeHtml(grafana)}" target="_blank" rel="noopener">Open Grafana ↗</a>` : ''}</div></header>
+      ${data?.reason ? `<div class="state error">⚠ ${escapeHtml(data.reason)}</div>` : ''}
+      <div class="kpis infra-kpis">
+        ${kpiCard('Targets healthy', targetValue, targetSub)}
+        ${kpiCard('Firing alerts', alertValue, alertSub)}
+        ${kpiCard('Average CPU', metricValue(data?.metrics?.cpu), '5-minute rate')}
+        ${kpiCard('Average memory', metricValue(data?.metrics?.memory), 'Current utilization')}
+        ${kpiCard('Average disk', metricValue(data?.metrics?.disk), 'Non-temporary filesystems')}
+      </div>
+      <section class="panel"><div class="section-head"><h2>Prometheus scrape targets</h2><span class="mono muted">Updated ${timeAgo(data?.generatedAt)}</span></div>
+        <table class="tbl"><thead><tr><th>Job</th><th>Instance</th><th>Health</th><th>Last error</th><th>Last scrape</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  }
+
+  /** Builds the operations-overview markup from API data. */
+
+  function renderDashboard(o, commandCenter, unifiedAttention = {}) {
     const k = o.kpis;
+    const tasks = commandCenter?.tasks || { status: 'error', items: [] };
+    const pullRequests = commandCenter?.pullRequests || { status: 'error', items: [] };
+    const cloudflare = commandCenter?.cloudflare || { status: 'error' };
+    const services = commandCenter?.services || [];
+    const attention = unifiedAttention?.items || commandCenter?.attention || [];
+
+    const sourceBadge = (label, source) =>
+      `<span class="badge ${escapeHtml(source.status || 'error')}">${escapeHtml(label)} · ${escapeHtml(source.status || 'error')}</span>`;
+    const safeLink = (url, label, className = '') => {
+      const href = safeDashboardUrl(url, window.location.href);
+      return href
+        ? `<a${className ? ` class="${escapeHtml(className)}"` : ''} href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`
+        : `<span${className ? ` class="${escapeHtml(className)}"` : ''}>${escapeHtml(label)}</span>`;
+    };
+    const taskRows = tasks.items?.length
+      ? tasks.items.map((item) => `<li>${safeLink(item.url, item.title)}<span class="mono muted">${escapeHtml(item.priority || '')} · ${escapeHtml(item.status || '')}</span></li>`).join('')
+      : '<li class="muted">No task records available.</li>';
+    const prRows = pullRequests.items?.length
+      ? pullRequests.items.slice(0, 8).map((item) => `<li>${safeLink(item.url, `${item.repository || 'repo'} #${item.number}: ${item.title}`)}<span class="mono muted">${item.draft ? 'draft' : 'open'} · ${timeAgo(item.updatedAt)}</span></li>`).join('')
+      : '<li class="muted">No open pull requests available.</li>';
+    const serviceRows = services.length
+      ? services.map((item) => `<li>${escapeHtml(item.name)} <span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><span class="mono muted">${item.httpStatus ?? '—'} · ${item.latencyMs ?? '—'}ms</span></li>`).join('')
+      : '<li class="muted">No service probes available.</li>';
+    const attentionRows = attention.length
+      ? attention.slice(0, 12).map((item) => {
+        const destination = item.externalUrl || item.notionUrl;
+        const title = destination ? safeLink(destination, item.title) : escapeHtml(item.title);
+        const inspect = item.targetView
+          ? `<button class="btn ghost compact" data-view="${escapeHtml(item.targetView)}">Inspect</button>`
+          : destination ? safeLink(destination, 'Open ↗', 'btn ghost compact') : '';
+        const directAction = item.action
+          ? `<button class="btn amber compact" data-act="${escapeHtml(item.action)}" data-id="${escapeHtml(item.id)}">Re-authorize</button>`
+          : '';
+        return `<li class="attention-item">
+          <div class="attention-copy"><span class="badge ${item.priority === 'critical' ? 'error' : 'degraded'}">${escapeHtml(item.priority || 'high')}</span>
+          ${title}<span class="muted">${escapeHtml(item.recommendedAction || '')}</span>
+          ${item.reason ? `<span class="mono muted">${escapeHtml(item.reason)}</span>` : ''}
+          ${item.jobId ? `<span class="mono muted">${escapeHtml(item.jobId)} · attempt ${item.attemptCount ?? 0}</span>` : ''}</div>
+          <div class="actions compact-actions">${inspect}${directAction}</div>
+        </li>`;
+      }).join('')
+      : `<li class="muted">${unifiedAttention?.error ? `Action queue unavailable: ${escapeHtml(unifiedAttention.error)}` : 'Nothing currently requires attention.'}</li>`;
+    const cfSummary = cloudflare.status === 'ok'
+      ? `${cloudflare.summary.workers} Workers · ${cloudflare.summary.accessApplications} Access apps · ${cloudflare.summary.healthyTunnels} healthy / ${cloudflare.summary.downTunnels} down tunnels`
+      : escapeHtml(cloudflare.reason || 'Cloudflare state unavailable');
     const kpis = [
       kpiCard('In Pipeline', k.inPipeline),
       kpiCard('Gate 1 Backlog', k.gate1Backlog, `oldest ${fmtDuration(k.gate1OldestAgeMs)} · target &lt;4h`),
@@ -241,7 +422,7 @@ if (typeof document !== 'undefined') {
 
     const recent = o.recentPublished.length
       ? o.recentPublished.map((r) =>
-          `<li><a href="${escapeHtml(r.publishedUrl || r.notionUrl)}" target="_blank" rel="noopener">${escapeHtml(r.title || 'Untitled')}</a>
+          `<li>${externalLink(r.publishedUrl || r.notionUrl, r.title || 'Untitled')}
             <span class="mono muted">${escapeHtml(r.publishedDate || '')}</span></li>`).join('')
       : `<li class="muted">Nothing published yet.</li>`;
 
@@ -252,9 +433,25 @@ if (typeof document !== 'undefined') {
       : `<li class="muted">No errors. Clean board.</li>`;
 
     return `
-      <header class="page-head"><h1>Operations Dashboard</h1>
-        <span class="mono muted">${new Date(o.generatedAt).toLocaleString()}</span></header>
+      <header class="page-head"><h1>Command Center</h1>
+        <span class="mono muted">${new Date(commandCenter?.generatedAt || o.generatedAt).toLocaleString()}</span></header>
       ${warn}
+      <section class="source-strip">
+        ${sourceBadge('Task Tracker', tasks)}
+        ${sourceBadge('GitHub PRs', pullRequests)}
+        ${sourceBadge('Cloudflare', cloudflare)}
+      </section>
+      <div class="cols command-grid">
+        <section class="panel"><div class="section-head"><h2>Action Required</h2><span class="mono muted">${unifiedAttention?.criticalCount ?? 0} critical · ${unifiedAttention?.count ?? attention.length} total</span></div><ul class="list attention-list">${attentionRows}</ul></section>
+        <section class="panel"><h2>System Health</h2><ul class="health">${serviceRows}</ul>
+          <div class="source-note">${cfSummary}</div></section>
+      </div>
+      <div class="cols command-grid">
+        <section class="panel"><h2>Authoritative Tasks</h2><ul class="list">${taskRows}</ul>
+          ${tasks.authoritativeUrl ? safeLink(tasks.authoritativeUrl, 'Open Task Tracker ↗', 'source-link') : ''}</section>
+        <section class="panel"><h2>Open Pull Requests</h2><ul class="list">${prRows}</ul>
+          ${pullRequests.authoritativeUrl ? safeLink(pullRequests.authoritativeUrl, 'Open GitHub PRs ↗', 'source-link') : ''}</section>
+      </div>
       <section class="kpi-strip">${kpis}</section>
       <section class="panel"><h2>Pipeline — Active Stages</h2>
         <div class="chart">${bars}</div>
@@ -281,6 +478,7 @@ if (typeof document !== 'undefined') {
   }
 
   // ── review queue (Gate 1) ───────────────────────────────────────────────────
+  /** Loads the transcription approval queue from Notion through the Worker. */
   async function loadQueue() {
     const root = view('queue');
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading queue…')}</div><div class="detail-pane"></div></div>`;
@@ -292,6 +490,8 @@ if (typeof document !== 'undefined') {
       $('.list-pane', root).innerHTML = errorState(e.message);
     }
   }
+
+  /** Renders the Gate 1 review list and selects a default record. */
 
   function renderQueue() {
     const root = view('queue');
@@ -306,6 +506,8 @@ if (typeof document !== 'undefined') {
     renderQueueDetail();
   }
 
+  /** Renders the selected Gate 1 record and its source video. */
+
   function renderQueueDetail() {
     const root = view('queue');
     const it = state.queue[state.selectedQueue];
@@ -318,23 +520,26 @@ if (typeof document !== 'undefined') {
         <dt>Category</dt><dd>${escapeHtml(it.category || '—')} / ${escapeHtml(it.subcategory || '—')}</dd>
         <dt>Tags</dt><dd>${(it.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join(' ') || '—'}</dd>
         <dt>Added</dt><dd class="mono">${timeAgo(it.createdTime)} ago</dd>
-        <dt>Video</dt><dd>${it.videoUrl ? `<a href="${escapeHtml(it.videoUrl)}" target="_blank" rel="noopener">Open video ↗</a>` : '—'}</dd>
+        <dt>Video</dt><dd>${it.videoUrl ? externalLink(it.videoUrl, 'Open video ↗') : '—'}</dd>
       </dl>
       <div class="actions">
         <button class="btn green" data-act="approve-transcription" data-id="${escapeHtml(it.id)}">Approve for Transcription</button>
         <button class="btn red" data-act="reject" data-id="${escapeHtml(it.id)}">Reject</button>
-        <a class="btn ghost" href="${escapeHtml(it.notionUrl)}" target="_blank" rel="noopener">Open in Notion ↗</a>
+        ${externalLink(it.notionUrl, 'Open in Notion ↗', 'btn ghost')}
       </div>
       <div class="act-msg"></div>`;
   }
 
   // ── draft review (Gate 2) ──────────────────────────────────────────────────
+  /** Builds the encoded query string for draft filters and pagination. */
   function draftParams(cursor = '') {
     const p = new URLSearchParams();
     Object.entries(state.draftQuery).forEach(([k, v]) => { if (v !== '') p.set(k, v); });
     if (cursor) p.set('cursor', cursor);
     return p.toString() ? `?${p}` : '';
   }
+
+  /** Loads the first filtered page of records awaiting draft review. */
 
   async function loadDrafts() {
     const root = view('drafts');
@@ -353,6 +558,8 @@ if (typeof document !== 'undefined') {
     } catch (e) { $('.list-pane', root).innerHTML = errorState(e.message); }
   }
 
+  /** Derives a compact editorial risk indicator from a comparison report. */
+
   function riskSummary(text = '') {
     const estimate = text.match(/(\d{1,3})\s*%/)?.[1];
     const unsupported = (text.match(/POSSIBLY UNSUPPORTED[\s\S]*?(?=CHANGED DETAILS|COVERAGE ESTIMATE|$)/i)?.[0].match(/^-/gm) || []).length;
@@ -360,6 +567,8 @@ if (typeof document !== 'undefined') {
     const level = unsupported + changed > 4 ? 'high' : unsupported + changed ? 'medium' : 'low';
     return `<div class="risk ${level}"><strong>${level.toUpperCase()} RISK</strong> · Coverage ${estimate ? estimate + '%' : 'not scored'} · ${unsupported} unsupported · ${changed} changed</div>`;
   }
+
+  /** Renders draft filters, selectable records, pagination, and bulk controls. */
 
   function renderDrafts() {
     const root = view('drafts'), listPane = $('.list-pane', root);
@@ -385,6 +594,8 @@ if (typeof document !== 'undefined') {
     renderDraftDetail();
   }
 
+  /** Appends the next cursor page of draft-review records. */
+
   async function loadMoreDrafts() {
     if (state.draftsLoading || !state.draftsHasMore || !state.draftsCursor) return;
     state.draftsLoading = true;
@@ -396,6 +607,8 @@ if (typeof document !== 'undefined') {
     } catch (e) { alert(e.message); } finally { state.draftsLoading = false; renderDrafts(); }
   }
 
+  /** Loads the transcript, draft, comparison, notes, and audit data for one record. */
+
   async function loadDraftDetail(pageId) {
     if (!pageId || state.draftDetails[pageId] || state.draftDetailLoading === pageId) return;
     state.draftDetailLoading = pageId; renderDraftDetail();
@@ -403,6 +616,8 @@ if (typeof document !== 'undefined') {
     catch (e) { state.draftDetails[pageId] = { error: e.message }; }
     finally { state.draftDetailLoading = null; renderDraftDetail(); }
   }
+
+  /** Renders the complete Gate 2 comparison and editing workspace. */
 
   function renderDraftDetail() {
     const root = view('drafts'), summary = state.drafts[state.selectedDraft], pane = $('.detail-pane', root);
@@ -420,7 +635,7 @@ if (typeof document !== 'undefined') {
       <section class="review-section"><div class="section-head"><h3>Editable Blog Draft</h3><span id="draft-count" class="mono muted">${detail.wordCount} words</span></div><textarea id="draft-editor" class="draft-editor">${escapeHtml(detail.blogDraft || '')}</textarea><details><summary>Rendered HTML preview</summary><iframe id="draft-preview" class="draft-preview" sandbox srcdoc="${escapeHtml(detail.blogDraft || '')}"></iframe></details></section></div>
       <label class="review-notes">Reviewer notes<textarea id="reviewer-notes">${escapeHtml(detail.reviewerNotes || '')}</textarea></label>
       <details class="audit"><summary>Review audit history</summary><pre>${escapeHtml(detail.reviewAuditLog || 'No dashboard actions recorded yet.')}</pre></details>
-      <div class="actions"><a class="btn ghost" href="${escapeHtml(detail.notionUrl)}" target="_blank" rel="noopener">Open in Notion ↗</a>
+      <div class="actions">${externalLink(detail.notionUrl, 'Open in Notion ↗', 'btn ghost')}
       <button class="btn purple" data-act="save-draft" data-id="${detail.id}">Save Draft</button>
       <button class="btn amber" data-act="return-revision" data-id="${detail.id}">Return for Revision</button>
       <button class="btn red" data-act="reject" data-id="${detail.id}">Reject</button>
@@ -429,6 +644,7 @@ if (typeof document !== 'undefined') {
   }
 
   // ── board ──────────────────────────────────────────────────────────────────
+  /** Loads and renders the Content Catalog pipeline board. */
   async function loadBoard() {
     const root = view('board');
     root.innerHTML = loading('Loading catalog…');
@@ -446,6 +662,7 @@ if (typeof document !== 'undefined') {
   }
 
   // ── errors ─────────────────────────────────────────────────────────────────
+  /** Loads and renders rejected records and automation errors. */
   async function loadErrors() {
     const root = view('errors');
     root.innerHTML = loading('Loading errors…');
@@ -455,7 +672,7 @@ if (typeof document !== 'undefined') {
       root.innerHTML = `<header class="page-head"><h1>Errors &amp; Exceptions</h1></header>
         <table class="tbl"><thead><tr><th>Title</th><th>Status</th><th>Last Error</th><th>Source</th></tr></thead>
         <tbody>${data.items.map((e) => `<tr>
-          <td><a href="${escapeHtml(e.notionUrl)}" target="_blank" rel="noopener">${escapeHtml(e.title || 'Untitled')}</a></td>
+          <td>${externalLink(e.notionUrl, e.title || 'Untitled')}</td>
           <td><span class="pill ${statusColor(e.status)}"></span>${escapeHtml(e.status || '')}</td>
           <td class="muted">${escapeHtml(e.lastError || '—')}</td>
           <td>${escapeHtml((e.source || []).join(', '))}</td></tr>`).join('')}</tbody></table>`;
@@ -465,12 +682,15 @@ if (typeof document !== 'undefined') {
   }
 
   // ── action handling (event delegation) ─────────────────────────────────────
+  /** Shows persistent success or error feedback after a dashboard action. */
   function toast(message, bad = false) {
     let el = $('#ops-toast');
     if (!el) { el = document.createElement('div'); el.id = 'ops-toast'; document.body.appendChild(el); }
     el.className = `toast ${bad ? 'bad' : 'ok'}`; el.textContent = message; el.hidden = false;
     clearTimeout(el._timer); el._timer = setTimeout(() => { el.hidden = true; }, 5000);
   }
+
+  /** Validates and submits a single governed review action. */
 
   async function runAction(btn) {
     const act = btn.dataset.act, pageId = btn.dataset.id;
@@ -495,10 +715,14 @@ if (typeof document !== 'undefined') {
       } else {
         const o = await api('/overview'); state.overview = o; setBadges();
         if (view('queue').classList.contains('active')) { state.selectedQueue = null; await loadQueue(); }
-        else await loadDrafts();
+        else if (view('drafts').classList.contains('active')) await loadDrafts();
+        else if (view('errors').classList.contains('active')) await loadErrors();
+        else await loadDashboard();
       }
     } catch (e) { btn.disabled = false; toast(e.message, true); }
   }
+
+  /** Validates and submits a guarded non-publishing bulk action. */
 
   async function runBulk() {
     const ids = [...state.selectedDraftIds], action = $('#bulk-action')?.value;
@@ -512,7 +736,30 @@ if (typeof document !== 'undefined') {
     } catch (e) { toast(e.message, true); }
   }
 
+  async function loadEnvironment() {
+    const config = await api('/config', {}, 200).catch(() => null);
+    const label = config?.environment;
+    if (label !== 'PREVIEW' && label !== 'LIVE') return;
+
+    const { siteUrl } = config;
+    if (siteUrl !== null && typeof siteUrl !== 'string') return;
+    const safeUrl = siteUrl?.startsWith('https://') ? safeDashboardUrl(siteUrl, window.location.href) : null;
+
+    const badge = $('#ops-environment');
+    badge.textContent = label;
+    badge.dataset.environment = label;
+    badge.hidden = false;
+    document.title = `[${label}] TechFusion OS`;
+    if (safeUrl) {
+      $('#editorial-site-link').insertAdjacentHTML('afterend',
+        externalLink(safeUrl, `View ${label} site`, 'nav-item ext', { noreferrer: true }));
+    }
+  }
+
+  /** Registers dashboard event handlers and opens the overview. */
+
   function init() {
+    void loadEnvironment();
     document.body.addEventListener('input', (ev) => {
       if (ev.target.id === 'draft-editor') {
         state.dirtyDraft = true;

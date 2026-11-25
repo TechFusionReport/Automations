@@ -57,6 +57,36 @@ test('health remains public and ops retains its own Access gate', async () => {
   assert.equal((await request('/health/other')).status, 401);
 });
 
+test('ops config rejects missing, malformed, and shared-secret-only credentials', async () => {
+  for (const headers of [undefined, { 'Cf-Access-Jwt-Assertion': 'malformed' }, secretHeader]) {
+    assert.equal((await request('/ops/api/config', { headers })).status, 403);
+  }
+});
+
+test('preview assets require Access and production ops asset requests retain their responses', async t => {
+  const fetch = t.mock.fn();
+  for (const path of ['/ops', '/ops/', '/ops/ops.js']) {
+    const denied = await request(path, {}, { ...env, ASSETS: { fetch } });
+    const apiDenied = await request('/ops/api/config');
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get('Location'), null);
+    assert.deepEqual(await denied.json(), await apiDenied.json());
+    assert.equal(denied.headers.get('Cache-Control'), 'private, no-store');
+  }
+  const deniedHead = await request('/ops', { method: 'HEAD' }, { ...env, ASSETS: { fetch } });
+  assert.equal(deniedHead.status, 403);
+  assert.equal(deniedHead.headers.get('Location'), null);
+  assert.equal(fetch.mock.callCount(), 0);
+  const productionRoot = await request('/ops');
+  assert.equal(productionRoot.status, 401);
+  assert.deepEqual(await productionRoot.json(), { error: 'Unauthorized' });
+  for (const path of ['/ops/', '/ops/ops.js']) {
+    const response = await request(path);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), 'Not Found');
+  }
+});
+
 test('signed Access JWTs work for both Worker routes and ops', async t => {
   const algorithm = 'RSASSA-PKCS1-v1_5';
   const { privateKey, publicKey } = await crypto.subtle.generateKey({
@@ -90,6 +120,95 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
   const headers = await signedHeaders(env.ACCESS_AUD);
   assert.equal((await request('/status', { headers }, bindings)).status, 200);
   assert.equal((await request('/status', { headers: await signedHeaders('other') }, bindings)).status, 401);
+  const configBindings = {
+    ...bindings,
+    OPS_ENV_LABEL: 'PREVIEW',
+    OPS_SITE_URL: 'https://preview.example/',
+    CONTENT_KV: {
+      get: async name => {
+        assert.equal(name, 'ops_access_jwks');
+        return JSON.stringify({ keys: [jwk] });
+      },
+    },
+  };
+  const config = await request('/ops/api/config', { headers }, configBindings);
+  assert.equal(config.status, 200);
+  assert.equal(config.headers.get('Cache-Control'), 'private, no-store');
+  assert.deepEqual(await config.json(), { environment: 'PREVIEW', siteUrl: 'https://preview.example/' });
+
+  const insecure = await request('/ops/api/config', { headers }, {
+    ...configBindings, OPS_ENV_LABEL: 'LIVE', OPS_SITE_URL: 'http://preview.example/',
+  });
+  assert.deepEqual(await insecure.json(), { environment: 'LIVE', siteUrl: null });
+
+  const unset = await request('/ops/api/config', { headers }, bindings);
+  assert.deepEqual(await unset.json(), { environment: 'UNKNOWN', siteUrl: null });
+  const wrongAudience = await request('/ops/api/config', { headers: await signedHeaders('other') }, configBindings);
+  assert.equal(wrongAudience.status, 403);
+
+  const assetCalls = [];
+  const ASSETS = {
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      assetCalls.push({ path, method: request.method, access: request.headers.has('Cf-Access-Jwt-Assertion') });
+      if (path === '/index.html') return new Response(null, { status: 307, headers: { Location: '/' } });
+      if (path === '/') return new Response('<!doctype html>', { headers: { 'Content-Type': 'text/html' } });
+      if (path === '/ops.js') return new Response('export {};', { headers: { 'Content-Type': 'text/javascript' } });
+      if (path === '/techfusion-os.css') return new Response('body {}', { headers: { 'Content-Type': 'text/css' } });
+      return new Response('Unknown asset', { status: 404 });
+    },
+  };
+  const preview = { ...configBindings, ASSETS };
+  for (const method of ['GET', 'HEAD']) {
+    const redirect = await request('/ops', { method, headers }, preview);
+    assert.equal(redirect.status, 308);
+    assert.equal(redirect.headers.get('Location'), '/ops/');
+    assert.equal(redirect.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(await redirect.text(), '');
+  }
+  assert.deepEqual(assetCalls, []);
+  for (const [path, expected, type] of [
+    ['/ops/', '<!doctype html>', 'text/html'],
+    ['/ops/ops.js', 'export {};', 'text/javascript'],
+    ['/ops/techfusion-os.css', 'body {}', 'text/css'],
+  ]) {
+    const response = await request(path, { headers }, preview);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), type);
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(await response.text(), expected);
+  }
+  assert.deepEqual(assetCalls.map(({ path }) => path), [
+    '/index.html', '/', '/ops.js', '/techfusion-os.css',
+  ]);
+  assert.ok(assetCalls.every(call => !call.access));
+
+  const head = await request('/ops/ops.js', { method: 'HEAD', headers }, preview);
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  assert.equal(assetCalls.at(-1).method, 'HEAD');
+  const missing = await request('/ops/missing.js', { headers }, preview);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get('Cache-Control'), 'private, no-store');
+  const before = assetCalls.length;
+  const post = await request('/ops/ops.js', { method: 'POST', headers }, preview);
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.get('Allow'), 'GET, HEAD');
+  for (const path of ['/ops/..file', '/ops/%2e%2e%2fsecret', '/ops/%252e%252e%252fsecret', '/ops/folder%5cfile']) {
+    const response = await request(path, { headers }, preview);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'invalid asset path' });
+  }
+  class RawPathRequest extends Request {
+    get url() { return 'https://worker.example/ops/../health'; }
+  }
+  const rawTraversal = await worker.fetch(new RawPathRequest('https://worker.example/health', { headers }), preview, {});
+  assert.equal(rawTraversal.status, 400);
+  const apiWithAssets = await request('/ops/api/config', { headers }, preview);
+  assert.deepEqual(await apiWithAssets.json(), { environment: 'PREVIEW', siteUrl: 'https://preview.example/' });
+  assert.equal((await request('/ops/api/config', {}, preview)).status, 403);
+  assert.equal(assetCalls.length, before);
+
   t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [] }));
   assert.equal((await request('/ops/api/queue', { headers }, bindings)).status, 200);
 });

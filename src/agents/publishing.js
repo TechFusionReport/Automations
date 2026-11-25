@@ -1,11 +1,34 @@
 import { AffiliateInserter } from '../utils/affiliates.js';
 import { CATALOG_PROPERTIES, CATALOG_STATUS } from '../utils/content-catalog.js';
 import { createLlmClient } from '../utils/llm-client.mjs';
+import { normalizePageId } from '../utils/ops-receipts.js';
+
+export const AI_ASSISTED_LABEL = 'AI-assisted: drafted by AI from the source material, then reviewed and approved by a human editor before publishing. <a href="/how-tfr-is-made.html">How TFR is made</a>';
+const ARTICLE_PATH = /^_posts\/(\d{4}-\d{2}-\d{2})-[a-z0-9-]+\.html$/;
+
+const SUMMARY_ENTITIES = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&#039;': "'", '&#39;': "'", '&nbsp;': ' ',
+};
+
+function decodeSummaryEntities(text) {
+  // Decode one HTML text layer. The template still escapes this plain text.
+  return text.replace(/&(?:amp|lt|gt|quot|apos|#0?39|nbsp);/g, entity => SUMMARY_ENTITIES[entity]);
+}
+
+function stripAffiliatePlaceholders(content) {
+  return content.replace(/\[\s*affiliate\s*:\s*([^\]\r\n]*)\]/gi, (_, tool) => tool.trim());
+}
 
 export class PublishingAgent {
   constructor(env) {
     this.env = env;
     this.affiliateInserter = new AffiliateInserter();
+    this.repoOwner = env.WEBSITE_REPO_OWNER || 'TechFusionReport';
+    this.repoName = env.WEBSITE_REPO_NAME || 'Website';
+    this.repoBranch = env.WEBSITE_REPO_BRANCH || 'main';
+    this.repo = `${this.repoOwner}/${this.repoName}`;
+    this.repoTarget = `${this.repo}@${this.repoBranch}`;
+    this.repoApi = `https://api.github.com/repos/${this.repo}`;
   }
 
   createSlug(title) {
@@ -33,15 +56,12 @@ export class PublishingAgent {
       .replace(/'/g, '&#039;');
   }
 
-  stripHtml(value = '') {
-    return String(value)
+  stripHtml(value = '', decodeEntities = text => text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')) {
+    const text = String(value)
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/<[^>]+>/g, ' ');
+    return decodeEntities(text).replace(/\s+/g, ' ').trim();
   }
 
   async getSecrets() {
@@ -57,50 +77,59 @@ export class PublishingAgent {
     };
   }
 
-  async ensureBranch(branchName, secrets) {
-    const headers = this.githubHeaders(secrets.github_pat);
-    const base = 'https://api.github.com/repos/TechFusionReport/Website';
-    const existing = await fetch(`${base}/git/ref/heads/${branchName}`, { headers });
-    if (existing.ok) return;
-    const mainRef = await fetch(`${base}/git/ref/heads/main`, { headers });
-    if (!mainRef.ok) throw new Error(`Failed to read main ref: ${await mainRef.text()}`);
-    const { object: { sha } } = await mainRef.json();
-    const createRes = await fetch(`${base}/git/refs`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha })
+  async stagePublishBranch(branch, path, html, posts, baseSha, secrets) {
+    const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
+    const ref = this.refPath(branch);
+    const request = async (path, method, body) => {
+      const response = await fetch(`${this.repoApi}/${path}`, {
+        method, headers, ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      if (!response.ok) throw new Error('Could not stage Website publish branch');
+      return response.json();
+    };
+    const existing = await fetch(`${this.repoApi}/git/ref/heads/${ref}`, { headers });
+    if (!existing.ok && existing.status !== 404) throw new Error('Could not read publish branch');
+    const parent = existing.ok ? (await existing.json()).object.sha : baseSha;
+    const base = await request(`git/commits/${baseSha}`, 'GET');
+    // Start from the base tree, even on retry, so no stale draft files survive.
+    const tree = await request('git/trees', 'POST', {
+      base_tree: base.tree.sha,
+      tree: [[path, html], ['posts.json', posts]].map(([file, content]) => ({
+        path: file, content, mode: '100644', type: 'blob',
+      })),
     });
-    if (!createRes.ok && createRes.status !== 422) {
-      throw new Error(`Failed to create branch ${branchName}: ${await createRes.text()}`);
+    const commit = await request('git/commits', 'POST', {
+      message: 'Stage article and update posts index', tree: tree.sha, parents: [parent],
+    });
+    if (await this.findPublishPR(branch, secrets)) throw new Error('Publish PR already exists');
+    if (existing.ok) {
+      await request(`git/refs/heads/${ref}`, 'PATCH', { sha: commit.sha, force: false });
+    } else {
+      await request('git/refs', 'POST', { ref: `refs/heads/${branch}`, sha: commit.sha });
     }
+    return commit.sha;
   }
 
-  async commitFileToBranch(path, contentString, message, branch, secrets, { isBase64 = false } = {}) {
-    const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
-    const apiBase = `https://api.github.com/repos/TechFusionReport/Website/contents/${path}`;
-    const checkRes = await fetch(`${apiBase}?ref=${branch}`, { headers });
-    const sha = checkRes.ok ? (await checkRes.json()).sha : undefined;
-    const content = isBase64 ? contentString : btoa(unescape(encodeURIComponent(contentString)));
-    const commitRes = await fetch(apiBase, {
-      method: 'PUT', headers,
-      body: JSON.stringify({
-        message, content, branch, ...(sha ? { sha } : {}),
-        committer: { name: 'TechFusion Bot', email: 'bot@techfusionreport.com' }
-      })
+  async getBaseCommit(secrets) {
+    const response = await fetch(`${this.repoApi}/git/ref/heads/${this.refPath(this.repoBranch)}`, {
+      headers: this.githubHeaders(secrets.github_pat),
     });
-    if (!commitRes.ok) throw new Error(`GitHub commit failed (${path}): ${await commitRes.text()}`);
-    return (await commitRes.json()).content.html_url;
+    if (!response.ok) throw new Error('Could not read Website base branch');
+    return (await response.json()).object.sha;
   }
 
-  async openPublishPR(branch, metadata, notionPageId, secrets) {
+  async openPublishPR(branch, metadata, notionPageId, secrets, hash, headSha) {
     const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
-    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const base = this.repoApi;
     const prRes = await fetch(`${base}/pulls`, {
       method: 'POST', headers,
       body: JSON.stringify({
-        title: `Publish: ${metadata.title}`, head: branch, base: 'main',
+        title: `Publish: ${metadata.title}`, head: branch, base: this.repoBranch,
         body: [
           `Automated publish for a TechFusion Report Content Catalog v2 record.`, ``,
+          `Website target: ${this.repoTarget}`,
+          `Publish-Payload-SHA256: ${hash}`,
+          `Publish-Head-SHA: ${headSha}`,
           `Notion-Page-Id: ${notionPageId}`,
           `Published-Slug: ${metadata.slug}`,
           `Published-Path: ${metadata.path}`, ``,
@@ -110,46 +139,72 @@ export class PublishingAgent {
         ].join('\n')
       })
     });
-    if (!prRes.ok) throw new Error(`PR creation failed: ${await prRes.text()}`);
+    if (prRes.status === 422) {
+      const existing = await this.findPublishPR(branch, secrets);
+      if (existing) return existing;
+    }
+    if (!prRes.ok) throw new Error('Could not open publish PR');
     return await prRes.json();
   }
 
-  async tryMergePR(prNumber, secrets) {
+  async tryMergePR(prNumber, secrets, headSha) {
     const headers = { ...this.githubHeaders(secrets.github_pat), 'Content-Type': 'application/json' };
-    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const base = this.repoApi;
     const res = await fetch(`${base}/pulls/${prNumber}/merge`, {
-      method: 'PUT', headers, body: JSON.stringify({ merge_method: 'squash' })
+      method: 'PUT', headers, body: JSON.stringify({ merge_method: 'squash', sha: headSha })
     });
-    if (res.ok) return { merged: true };
-    return { merged: false, error: await res.text() };
+    return { merged: res.ok && (await res.json()).merged === true };
   }
 
   async getPRState(prNumber, secrets) {
     const headers = this.githubHeaders(secrets.github_pat);
-    const base = 'https://api.github.com/repos/TechFusionReport/Website';
+    const base = this.repoApi;
     const res = await fetch(`${base}/pulls/${prNumber}`, { headers });
     if (!res.ok) return null;
-    const pr = await res.json();
-    return { state: pr.state, merged: pr.merged, html_url: pr.html_url, number: pr.number };
+    return res.json();
+  }
+
+  refPath(branch) {
+    return branch.split('/').map(encodeURIComponent).join('/');
   }
 
   extractPRNumber(prUrl) {
-    const m = String(prUrl || '').match(/\/pull\/(\d+)/);
-    return m ? Number(m[1]) : null;
+    try {
+      const url = new URL(prUrl);
+      const parts = url.pathname.split('/');
+      if (url.origin !== 'https://github.com' || parts.length !== 5 || parts[3] !== 'pull'
+        || `${parts[1]}/${parts[2]}`.toLowerCase() !== this.repo.toLowerCase()
+        || !/^\d+$/.test(parts[4])) return null;
+      return Number(parts[4]);
+    } catch {
+      return null;
+    }
   }
 
-  async updatePostsJsonOnBranch(metadata, branch, secrets) {
+  async findPublishPR(branch, secrets) {
+    const query = new URLSearchParams({ state: 'all', head: `${this.repoOwner}:${branch}`, base: this.repoBranch });
+    const response = await fetch(`${this.repoApi}/pulls?${query}`, { headers: this.githubHeaders(secrets.github_pat) });
+    if (!response.ok) throw new Error('Could not look up publish PR');
+    const pulls = await response.json();
+    // List responses do not provide authoritative merge state.
+    return pulls.length ? this.getPRState(pulls[0].number, secrets).then(pr => {
+      if (!pr) throw new Error('Could not read existing publish PR');
+      return pr;
+    }) : null;
+  }
+
+  async readPostsJson(baseSha, secrets) {
     const headers = this.githubHeaders(secrets.github_pat);
-    const apiBase = 'https://api.github.com/repos/TechFusionReport/Website/contents/posts.json';
-    const existing = await fetch(`${apiBase}?ref=${branch}`, { headers });
-    let posts = [];
-    if (existing.ok) {
-      const data = await existing.json();
-      try { posts = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))))); }
-      catch { posts = []; }
-    }
+    const apiBase = `${this.repoApi}/contents/posts.json`;
+    const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(baseSha)}`, { headers });
+    if (!existing.ok) throw new Error('Could not read Website posts index');
+    const data = await existing.json();
+    return JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
+  }
+
+  async buildPostsJson(metadata, baseSha, secrets, targetPosts) {
     const newSlug = `${metadata.date}-${metadata.slug}`;
-    posts = posts.filter(p => p.slug !== newSlug);
+    const posts = (targetPosts ?? await this.readPostsJson(baseSha, secrets)).filter(p => p.slug !== newSlug);
     posts.unshift({
       title: metadata.title, seoTitle: metadata.seoTitle, slug: newSlug, date: metadata.date,
       category: metadata.category, subcategory: metadata.subcategory,
@@ -158,13 +213,12 @@ export class PublishingAgent {
       url: `/_posts/${newSlug}.html`, feature: Boolean(metadata.featured),
       file: `${newSlug}.html`, tags: metadata.tags || []
     });
-    await this.commitFileToBranch('posts.json', JSON.stringify(posts, null, 2),
-      `Update posts.json: add ${metadata.title}`, branch, secrets);
+    return JSON.stringify(posts, null, 2);
   }
 
   async markPublished(pageId, githubUrl, canonicalUrl, date, secrets) {
-    const token = secrets.notion_token;
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
+    const response = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       method: 'PATCH',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
       body: JSON.stringify({
@@ -179,11 +233,12 @@ export class PublishingAgent {
         }
       })
     });
+    if (!response.ok) throw new Error('Could not mark article published');
   }
 
-  async markAwaitingMerge(pageId, prUrl, mergeError, secrets) {
-    const token = secrets.notion_token;
-    await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+  async markAwaitingMerge(pageId, prUrl, secrets) {
+    const token = secrets.notion_token || this.env.NOTION_TOKEN;
+    const response = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
       method: 'PATCH',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
       body: JSON.stringify({
@@ -191,11 +246,59 @@ export class PublishingAgent {
           [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.publishPrOpen } },
           [CATALOG_PROPERTIES.publishPrUrl]: { url: prUrl },
           [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content:
-            `Not an error — PR opened, needs a human merge (branch protection requires review): ${(mergeError || '').substring(0, 400)}`
+            'Publish PR open. Waiting for merge.'
           } }] }
         }
       })
     });
+    if (!response.ok) throw new Error('Could not save publish PR');
+  }
+
+  async completePublishPR(pageId, pr, secrets, verify) {
+    const field = name => pr?.body?.split(/\r?\n/).find(line => line.startsWith(name))?.slice(name.length).trim();
+    const path = field('Published-Path:');
+    const pathMatch = ARTICLE_PATH.exec(path || '');
+    if (!pr || this.extractPRNumber(pr.html_url) !== pr.number || pr.base?.ref !== this.repoBranch
+      || normalizePageId(field('Notion-Page-Id:')) !== normalizePageId(pageId) || !pathMatch) {
+      console.warn('Publisher Poller: existing PR metadata unavailable');
+      return { awaitingMerge: true };
+    }
+
+    let merged = pr.merged === true;
+    if (!merged && pr.state === 'closed') {
+      const token = secrets.notion_token || this.env.NOTION_TOKEN;
+      const response = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Notion-Version': '2022-06-28' },
+        body: JSON.stringify({ properties: {
+          [CATALOG_PROPERTIES.status]: { status: { name: CATALOG_STATUS.publishFailed } },
+          [CATALOG_PROPERTIES.lastError]: { rich_text: [{ text: { content: 'Publish PR closed without merging.' } }] },
+        } }),
+      });
+      if (!response.ok) throw new Error('Could not record closed publish PR');
+      return { errored: true };
+    }
+    if (!merged && pr.state === 'open') {
+      const hash = field('Publish-Payload-SHA256:');
+      const head = field('Publish-Head-SHA:');
+      if (!/^[0-9a-f]{64}$/.test(hash || '') || !/^[0-9a-f]{40}$/.test(head || '') || pr.head?.sha !== head) {
+        console.warn('Publisher Poller: open PR has no verified payload binding');
+        return { awaitingMerge: true };
+      }
+      const proof = await verify(hash, true);
+      if (!proof.valid) {
+        console.warn(`Publisher Poller: skipped merge — ${proof.reason}`);
+        return { awaitingMerge: true };
+      }
+      console.log(`Publisher Poller: merging article to ${this.repoTarget}`);
+      merged = (await this.tryMergePR(pr.number, secrets, pr.head.sha)).merged;
+    }
+    if (!merged) return { awaitingMerge: true };
+
+    const githubUrl = `https://github.com/${this.repo}/blob/${this.refPath(this.repoBranch)}/${path}`;
+    const canonicalUrl = `https://www.techfusionreport.com/${path}`;
+    await this.markPublished(pageId, githubUrl, canonicalUrl, pathMatch[1], secrets);
+    return { processed: true };
   }
 
   async publish({
@@ -217,8 +320,7 @@ export class PublishingAgent {
     focusKeyword = null,
     imageAltText = null,
     defaultAuthor = null
-  }) {
-    const secrets = await this.getSecrets();
+  }, { secrets, hash, verify }) {
     const date = new Date().toISOString().split('T')[0];
     const slug = this.sanitizeSlug(seoSlug) || this.createSlug(title);
     const path = `_posts/${date}-${slug}.html`;
@@ -248,42 +350,66 @@ export class PublishingAgent {
       defaultAuthor
     };
 
-    const contentWithAffiliates = this.affiliateInserter.insert(content);
-    metadata.relatedArticles = await this.findRelatedArticles(metadata);
-    const template = await this.fetchWebsiteTemplate(secrets);
-    const html = this.convertToHTML(contentWithAffiliates, metadata, template);
-
-    const branch = `publish/${notionPageId}-${slug}`;
-    await this.ensureBranch(branch, secrets);
-    const githubUrl = await this.commitFileToBranch(
-      path, html, `Add: ${title} [${metadata.category}]`, branch, secrets
-    );
-    await this.updatePostsJsonOnBranch(metadata, branch, secrets);
-
-    const pr = await this.openPublishPR(branch, metadata, notionPageId, secrets);
-    const mergeResult = await this.tryMergePR(pr.number, secrets);
-
-    await this.env.CONTENT_KV.put(`article:${slug}`, JSON.stringify({
-      ...metadata,
-      githubUrl,
-      publishedAt: Date.now(),
-      views: 0
-    }));
-
-    if (mergeResult.merged) {
-      await fetch(`https://api.github.com/repos/TechFusionReport/Website/git/refs/heads/${branch}`,
-        { method: 'DELETE', headers: this.githubHeaders(secrets.github_pat) }).catch(() => {});
-      await this.markPublished(notionPageId, githubUrl, canonicalUrl, date, secrets);
-      return new Response(JSON.stringify({ status: 'published', url: canonicalUrl, github: githubUrl, pr: pr.html_url }),
-        { headers: { 'Content-Type': 'application/json' } });
+    const branch = `publish/${normalizePageId(notionPageId)}`;
+    const legacyBranch = `publish/${notionPageId}-${slug}`;
+    const existing = await this.findPublishPR(branch, secrets) || await this.findPublishPR(legacyBranch, secrets);
+    if (existing) {
+      if (existing.state === 'open') await this.markAwaitingMerge(notionPageId, existing.html_url, secrets);
+      return this.completePublishPR(notionPageId, existing, secrets, verify);
     }
+    if (!content) return { blocked: true, reason: 'missing_draft' };
 
-    await this.markAwaitingMerge(notionPageId, pr.html_url, mergeResult.error, secrets);
-    return new Response(JSON.stringify({ status: 'awaiting-merge', pr: pr.html_url, reason: mergeResult.error }),
-      { headers: { 'Content-Type': 'application/json' } });
+    const baseSha = await this.getBaseCommit(secrets);
+    const targetPosts = await this.readPostsJson(baseSha, secrets);
+    const renderContent = this.env.AFFILIATE_LINKS_ENABLED === 'true'
+      ? this.affiliateInserter.insert(content)
+      : stripAffiliatePlaceholders(content);
+    metadata.relatedArticles = await this.findRelatedArticles(metadata, targetPosts, baseSha, secrets);
+    const template = await this.fetchWebsiteTemplate(secrets);
+    const html = this.convertToHTML(renderContent, metadata, template);
+
+    const authorize = async () => {
+      const proof = await verify(hash);
+      if (!proof.valid) console.warn(`Publisher Poller: skipped — ${proof.reason}`);
+      return proof;
+    };
+    const beforeWrite = await authorize();
+    if (!beforeWrite.valid) return { skipped: true, reason: beforeWrite.reason };
+
+    console.log(`Publisher Poller: staging article for ${this.repoTarget}`);
+    const legacyRef = await fetch(`${this.repoApi}/git/ref/heads/${this.refPath(legacyBranch)}`, {
+      headers: this.githubHeaders(secrets.github_pat),
+    });
+    if (!legacyRef.ok && legacyRef.status !== 404) throw new Error('Could not check legacy publish branch');
+    const publishBranch = legacyRef.ok ? legacyBranch : branch;
+    const concurrent = await this.findPublishPR(publishBranch, secrets);
+    if (concurrent) return this.completePublishPR(notionPageId, concurrent, secrets, verify);
+    const posts = await this.buildPostsJson(metadata, baseSha, secrets, targetPosts);
+    const headSha = await this.stagePublishBranch(publishBranch, path, html, posts, baseSha, secrets);
+
+    const beforePR = await authorize();
+    if (!beforePR.valid) return { skipped: true, reason: beforePR.reason };
+
+    const pr = await this.openPublishPR(publishBranch, metadata, notionPageId, secrets, hash, headSha);
+    const state = await this.getPRState(pr.number, secrets);
+    if (!state) throw new Error('Could not read new publish PR');
+    if (state.state === 'open') await this.markAwaitingMerge(notionPageId, state.html_url, secrets);
+    if (state.head?.sha === headSha && state.body?.includes(`Publish-Head-SHA: ${headSha}\n`)) {
+      const githubUrl = `https://github.com/${this.repo}/blob/${this.refPath(publishBranch)}/${path}`;
+      await this.env.CONTENT_KV.put(`article:${slug}`, JSON.stringify({
+        ...metadata, githubUrl, publishedAt: Date.now(), views: 0,
+      })).catch(() => console.warn('Publisher Poller: could not cache article metadata'));
+    }
+    return this.completePublishPR(notionPageId, state, secrets, verify);
   }
 
-  async findRelatedArticles(metadata) {
+  async findRelatedArticles(metadata, targetPosts, baseSha, secrets) {
+    const indexed = new Map(targetPosts
+      .filter(post => typeof post?.url === 'string' && post.url.startsWith('/')
+        && ARTICLE_PATH.test(post.url.slice(1)))
+      .map(post => [post.url, post]));
+    if (!indexed.size) return [];
+
     try {
       const list = await this.env.CONTENT_KV.list({ prefix: 'article:', limit: 100 });
       const candidates = [];
@@ -293,6 +419,9 @@ export class PublishingAgent {
         if (!raw) continue;
         const article = JSON.parse(raw);
         if (!article?.slug || article.slug === metadata.slug) continue;
+        const url = `/_posts/${article.date}-${article.slug}.html`;
+        const post = indexed.get(url);
+        if (!post) continue;
 
         let score = 0;
         if (article.category === metadata.category) score += 4;
@@ -301,18 +430,27 @@ export class PublishingAgent {
         score += overlap * 2;
         if (metadata.focusKeyword && String(article.focusKeyword || '').toLowerCase() === String(metadata.focusKeyword).toLowerCase()) score += 3;
 
-        if (score > 0) candidates.push({ ...article, relevanceScore: score });
+        if (score > 0) candidates.push({ ...article, post, url, relevanceScore: score });
       }
+      if (!candidates.length) return [];
+
+      const response = await fetch(`${this.repoApi}/contents/_posts?ref=${encodeURIComponent(baseSha)}`, {
+        headers: this.githubHeaders(secrets.github_pat),
+      });
+      if (!response.ok) throw new Error('Could not read Website article files');
+      const files = new Set((await response.json()).filter(item => item.type === 'file').map(item => item.path));
 
       return candidates
+        .filter(article => files.has(article.url.slice(1)))
         .sort((a, b) => Number(b.category === metadata.category) - Number(a.category === metadata.category) || b.relevanceScore - a.relevanceScore || (b.publishedAt || 0) - (a.publishedAt || 0))
         .slice(0, 4)
         .map(article => ({
-          title: article.title,
-          url: article.canonicalUrl || `https://www.techfusionreport.com/_posts/${article.date}-${article.slug}.html`
+          title: article.post.title || article.title,
+          // Keep the target index path relative to the article's site, including Pages project prefixes.
+          url: `..${article.url}`,
         }));
-    } catch (e) {
-      console.warn('Related article lookup failed:', e.message);
+    } catch {
+      console.warn('Related article lookup failed');
       return [];
     }
   }
@@ -367,7 +505,7 @@ export class PublishingAgent {
   }
 
   async fetchWebsiteTemplate(secrets) {
-    const response = await fetch('https://api.github.com/repos/TechFusionReport/Website/contents/blog-post-template.html?ref=main', {
+    const response = await fetch(`${this.repoApi}/contents/blog-post-template.html?ref=${encodeURIComponent(this.repoBranch)}`, {
       headers: this.githubHeaders(secrets.github_pat)
     });
     if (!response.ok) throw new Error(`Website template fetch failed (HTTP ${response.status})`);
@@ -391,7 +529,8 @@ export class PublishingAgent {
     };
     const date = metadata.date;
     const datedSlug = `${date}-${metadata.slug}`;
-    const articleHtml = this.normalizeArticleHtml(content, metadata);
+    const disclosure = `<p class="ai-assisted-disclosure">${AI_ASSISTED_LABEL}</p>`;
+    const articleHtml = this.normalizeArticleHtml(String(content || '').replaceAll(disclosure, '').replaceAll(AI_ASSISTED_LABEL, ''), metadata);
     const image = String(metadata.image || '').trim();
     if (image && !/^(https?:\/\/|\/)[^\s"'<>]+$/i.test(image)) throw new Error('Invalid article image URL');
     const related = (metadata.relatedArticles || []).map(item =>
@@ -421,7 +560,7 @@ export class PublishingAgent {
       DATE: date, UPDATED_DATE: metadata.updatedDate || date, DISPLAY_DATE: displayDate,
       READ_TIME: `${this.estimateReadingTime(articleHtml)} min read`,
       AUTHOR: metadata.defaultAuthor || 'TechFusion Report', DEK: metadata.dek || metadata.description || '',
-      TLDR: this.generateTLDR(articleHtml), BODY_HTML: articleHtml,
+      TLDR: this.generateTLDR(articleHtml), BODY_HTML: `${disclosure}\n${articleHtml}`,
       INLINE_IMAGE: metadata.inlineImage || '', INLINE_IMAGE_ALT: metadata.inlineImageAlt || '',
       INLINE_IMAGE_CAPTION: metadata.inlineImageCaption || '',
       BODY_CONTINUED_HTML: metadata.bodyContinuedHtml || '',
@@ -457,7 +596,7 @@ export class PublishingAgent {
   }
 
   generateTLDR(content) {
-    const text = this.stripHtml(content);
+    const text = this.stripHtml(content, decodeSummaryEntities);
     return text.length > 200 ? `${text.substring(0, 197).trim()}...` : text;
   }
 

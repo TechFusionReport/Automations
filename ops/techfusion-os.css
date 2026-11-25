@@ -1,0 +1,137 @@
+/* TechFusion OS shell additions. Keep module-specific styles in their owning files. */
+.nav-item.planned {
+  color: var(--muted);
+  cursor: default;
+  opacity: .72;
+}
+.nav-item.planned:hover {
+  background: transparent;
+  text-decoration: none;
+}
+.planned-tag {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 1px 6px;
+  font: 500 9px 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  color: var(--gray);
+}
+
+.source-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.source-strip .badge {
+  padding: 5px 9px;
+}
+.badge.unavailable,
+.badge.error,
+.badge.down {
+  background: rgba(248, 113, 113, .12);
+  color: #f87171;
+}
+.badge.degraded {
+  background: rgba(251, 191, 36, .12);
+  color: #fbbf24;
+}
+.badge.ok {
+  background: rgba(74, 222, 128, .12);
+  color: #4ade80;
+}
+.command-grid {
+  margin-bottom: 14px;
+}
+.command-grid .list,
+.command-grid .health {
+  max-height: 300px;
+  overflow: auto;
+}
+.command-grid li {
+  align-items: flex-start;
+  gap: 8px;
+}
+.command-grid li > a {
+  flex: 1;
+}
+.command-grid li > .muted {
+  margin-left: auto;
+  text-align: right;
+}
+.source-note {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font: 500 11px 'IBM Plex Mono', monospace;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.source-link {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.attention-list .attention-item {
+  align-items: flex-start;
+  padding: 12px 0;
+}
+.attention-copy {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+.attention-copy > a,
+.attention-copy > span:not(.badge) {
+  overflow-wrap: anywhere;
+}
+.btn.compact {
+  font-size: 11px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.compact-actions {
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+@media (max-width: 820px) {
+  .source-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .source-strip .badge {
+    text-align: center;
+  }
+  .attention-list .attention-item {
+    flex-direction: column;
+  }
+  .compact-actions {
+    margin-left: 0;
+  }
+}
+
+
+.header-actions { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+.infra-kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.badge.healthy { color: #4ade80; border-color: #26633d; background: #10271b; }
+.badge.degraded { color: #fbbf24; border-color: #6d591d; background: #2c2510; }
+.badge.unavailable { color: #fb7185; border-color: #71303b; background: #30151a; }
+
+@media (max-width: 1100px) { .infra-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .infra-kpis { grid-template-columns: 1fr; } }
+
+.ops-environment:not([hidden]) {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  font: 700 10px/1.2 'DM Sans', system-ui, sans-serif;
+  letter-spacing: .4px;
+  overflow-wrap: anywhere;
+}
+.ops-environment[data-environment="PREVIEW"] { color: var(--amber); }
+.ops-environment[data-environment="LIVE"] { color: var(--green); }

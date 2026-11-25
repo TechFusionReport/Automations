@@ -5,6 +5,7 @@ import DiscoveryAgent    from './agents/discovery.js';
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
 import { verifyAccessRequest } from './ops/access.js';
+import { handleReceiptVerification } from './ops/receipts.js';
 import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
@@ -79,6 +80,7 @@ export default {
     }
 
     const router = new Router();
+    router.post('/receipts/verify', handleReceiptVerification);
 
     // ── Core pipeline endpoints ────────────────────────────────────────────
     router.post('/discover', async (req, env) => {
@@ -86,8 +88,9 @@ export default {
     });
 
     router.post('/publish', async (req, env) => {
-      const data = await req.json();
-      return await new PublishingAgent(env).publish(data);
+      const { notionPageId } = await req.json();
+      if (!notionPageId) return json({ error: 'notionPageId required' }, 400);
+      return json(await new PublisherPoller(env).runSingle(notionPageId));
     });
 
     // ── Manual poll triggers (for testing without waiting for cron) ────────
@@ -294,10 +297,12 @@ export default {
       const poller  = new PublisherPoller(env);
       for (const pageId of pageIds) {
         try {
-          await poller.runSingle(pageId);
-          results.push({ pageId, status: 'published' });
-        } catch (error) {
-          results.push({ pageId, status: 'error', error: error.message });
+          const result = await poller.runSingle(pageId);
+          const status = result.processed ? 'published' : result.awaitingMerge ? 'awaiting-merge'
+            : result.errored ? 'error' : result.blocked ? 'blocked' : 'skipped';
+          results.push({ pageId, status, ...(result.reason ? { reason: result.reason } : {}) });
+        } catch {
+          results.push({ pageId, status: 'error' });
         }
       }
       return json({ processed: results.length, results });
