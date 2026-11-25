@@ -63,6 +63,26 @@ test('ops config rejects missing, malformed, and shared-secret-only credentials'
   }
 });
 
+test('preview assets require Access and production ops asset requests retain their responses', async t => {
+  const fetch = t.mock.fn();
+  for (const path of ['/ops', '/ops/', '/ops/ops.js']) {
+    const denied = await request(path, {}, { ...env, ASSETS: { fetch } });
+    const apiDenied = await request('/ops/api/config');
+    assert.equal(denied.status, 403);
+    assert.deepEqual(await denied.json(), await apiDenied.json());
+    assert.equal(denied.headers.get('Cache-Control'), 'private, no-store');
+  }
+  assert.equal(fetch.mock.callCount(), 0);
+  const productionRoot = await request('/ops');
+  assert.equal(productionRoot.status, 401);
+  assert.deepEqual(await productionRoot.json(), { error: 'Unauthorized' });
+  for (const path of ['/ops/', '/ops/ops.js']) {
+    const response = await request(path);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), 'Not Found');
+  }
+});
+
 test('signed Access JWTs work for both Worker routes and ops', async t => {
   const algorithm = 'RSASSA-PKCS1-v1_5';
   const { privateKey, publicKey } = await crypto.subtle.generateKey({
@@ -121,6 +141,62 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
   assert.deepEqual(await unset.json(), { environment: 'UNKNOWN', siteUrl: null });
   const wrongAudience = await request('/ops/api/config', { headers: await signedHeaders('other') }, configBindings);
   assert.equal(wrongAudience.status, 403);
+
+  const assetCalls = [];
+  const ASSETS = {
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      assetCalls.push({ path, method: request.method, access: request.headers.has('Cf-Access-Jwt-Assertion') });
+      if (path === '/index.html') return new Response(null, { status: 307, headers: { Location: '/' } });
+      if (path === '/') return new Response('<!doctype html>', { headers: { 'Content-Type': 'text/html' } });
+      if (path === '/ops.js') return new Response('export {};', { headers: { 'Content-Type': 'text/javascript' } });
+      if (path === '/fonts/DM-Sans.ttf') return new Response('font', { headers: { 'Content-Type': 'font/ttf' } });
+      return new Response('Unknown asset', { status: 404 });
+    },
+  };
+  const preview = { ...configBindings, ASSETS };
+  for (const [path, expected, type] of [
+    ['/ops/', '<!doctype html>', 'text/html'],
+    ['/ops', '<!doctype html>', 'text/html'],
+    ['/ops/ops.js', 'export {};', 'text/javascript'],
+    ['/ops/fonts/DM-Sans.ttf', 'font', 'font/ttf'],
+  ]) {
+    const response = await request(path, { headers }, preview);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), type);
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(await response.text(), expected);
+  }
+  assert.deepEqual(assetCalls.map(({ path }) => path), [
+    '/index.html', '/', '/index.html', '/', '/ops.js', '/fonts/DM-Sans.ttf',
+  ]);
+  assert.ok(assetCalls.every(call => !call.access));
+
+  const head = await request('/ops/ops.js', { method: 'HEAD', headers }, preview);
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  assert.equal(assetCalls.at(-1).method, 'HEAD');
+  const missing = await request('/ops/missing.js', { headers }, preview);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get('Cache-Control'), 'private, no-store');
+  const before = assetCalls.length;
+  const post = await request('/ops/ops.js', { method: 'POST', headers }, preview);
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.get('Allow'), 'GET, HEAD');
+  for (const path of ['/ops/..file', '/ops/%2e%2e%2fsecret', '/ops/%252e%252e%252fsecret', '/ops/folder%5cfile']) {
+    const response = await request(path, { headers }, preview);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'invalid asset path' });
+  }
+  class RawPathRequest extends Request {
+    get url() { return 'https://worker.example/ops/../health'; }
+  }
+  const rawTraversal = await worker.fetch(new RawPathRequest('https://worker.example/health', { headers }), preview, {});
+  assert.equal(rawTraversal.status, 400);
+  const apiWithAssets = await request('/ops/api/config', { headers }, preview);
+  assert.deepEqual(await apiWithAssets.json(), { environment: 'PREVIEW', siteUrl: 'https://preview.example/' });
+  assert.equal((await request('/ops/api/config', {}, preview)).status, 403);
+  assert.equal(assetCalls.length, before);
 
   t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [] }));
   assert.equal((await request('/ops/api/queue', { headers }, bindings)).status, 200);
