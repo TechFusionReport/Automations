@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "scripts": {
+    "sync-ops-ui": "node scripts/sync-ops-ui.mjs"
+  }
+}

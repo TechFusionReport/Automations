@@ -1,0 +1,26 @@
+name: Ops UI drift (informational)
+
+on:
+  pull_request:
+    paths:
+      - 'ops/**'
+      - 'ops-sync.json'
+      - 'scripts/sync-ops-ui.mjs'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 8 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  ops-ui-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/sync-ops-ui.mjs --check

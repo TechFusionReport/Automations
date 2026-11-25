@@ -19,3 +19,11 @@ verdict for a live Content Catalog record and gate.
 ## Manual publishing
 
 The authenticated `POST /admin/publish-poll` route runs one publisher pass.
+
+## Preview Ops UI
+
+`TechFusionReport/Website` owns the canonical `ops/` directory. This repository
+keeps a synced copy used only by the preview Worker. Run `npm run sync-ops-ui`
+to re-sync from Website's `preview` branch, or pass `-- --ref <ref>` to use a
+different ref. Commit the updated `ops/` tree and root `ops-sync.json` together.
+Never edit the synced `ops/` files by hand.

@@ -401,6 +401,13 @@ async function serveOpsAsset(request, assets, url, rawPath) {
     return response;
   }
 
+  if (url.pathname === '/ops') {
+    return new Response(null, {
+      status: 308,
+      headers: { Location: '/ops/', 'Cache-Control': 'private, no-store' },
+    });
+  }
+
   const path = url.pathname.slice('/ops'.length);
   url.pathname = path && path !== '/' ? path : '/index.html';
   url.search = '';
