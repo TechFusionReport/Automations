@@ -15,6 +15,10 @@ function decodeSummaryEntities(text) {
   return text.replace(/&(?:amp|lt|gt|quot|apos|#0?39|nbsp);/g, entity => SUMMARY_ENTITIES[entity]);
 }
 
+function stripAffiliatePlaceholders(content) {
+  return content.replace(/\[\s*affiliate\s*:\s*([^\]\r\n]*)\]/gi, (_, tool) => tool.trim());
+}
+
 export class PublishingAgent {
   constructor(env) {
     this.env = env;
@@ -357,10 +361,12 @@ export class PublishingAgent {
 
     const baseSha = await this.getBaseCommit(secrets);
     const targetPosts = await this.readPostsJson(baseSha, secrets);
-    const contentWithAffiliates = this.affiliateInserter.insert(content);
+    const renderContent = this.env.AFFILIATE_LINKS_ENABLED === 'true'
+      ? this.affiliateInserter.insert(content)
+      : stripAffiliatePlaceholders(content);
     metadata.relatedArticles = await this.findRelatedArticles(metadata, targetPosts, baseSha, secrets);
     const template = await this.fetchWebsiteTemplate(secrets);
-    const html = this.convertToHTML(contentWithAffiliates, metadata, template);
+    const html = this.convertToHTML(renderContent, metadata, template);
 
     const authorize = async () => {
       const proof = await verify(hash);
