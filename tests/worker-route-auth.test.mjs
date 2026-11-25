@@ -57,6 +57,12 @@ test('health remains public and ops retains its own Access gate', async () => {
   assert.equal((await request('/health/other')).status, 401);
 });
 
+test('ops config rejects missing, malformed, and shared-secret-only credentials', async () => {
+  for (const headers of [undefined, { 'Cf-Access-Jwt-Assertion': 'malformed' }, secretHeader]) {
+    assert.equal((await request('/ops/api/config', { headers })).status, 403);
+  }
+});
+
 test('signed Access JWTs work for both Worker routes and ops', async t => {
   const algorithm = 'RSASSA-PKCS1-v1_5';
   const { privateKey, publicKey } = await crypto.subtle.generateKey({
@@ -90,6 +96,32 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
   const headers = await signedHeaders(env.ACCESS_AUD);
   assert.equal((await request('/status', { headers }, bindings)).status, 200);
   assert.equal((await request('/status', { headers: await signedHeaders('other') }, bindings)).status, 401);
+  const configBindings = {
+    ...bindings,
+    OPS_ENV_LABEL: 'PREVIEW',
+    OPS_SITE_URL: 'https://preview.example/',
+    CONTENT_KV: {
+      get: async name => {
+        assert.equal(name, 'ops_access_jwks');
+        return JSON.stringify({ keys: [jwk] });
+      },
+    },
+  };
+  const config = await request('/ops/api/config', { headers }, configBindings);
+  assert.equal(config.status, 200);
+  assert.equal(config.headers.get('Cache-Control'), 'private, no-store');
+  assert.deepEqual(await config.json(), { environment: 'PREVIEW', siteUrl: 'https://preview.example/' });
+
+  const insecure = await request('/ops/api/config', { headers }, {
+    ...configBindings, OPS_ENV_LABEL: 'LIVE', OPS_SITE_URL: 'http://preview.example/',
+  });
+  assert.deepEqual(await insecure.json(), { environment: 'LIVE', siteUrl: null });
+
+  const unset = await request('/ops/api/config', { headers }, bindings);
+  assert.deepEqual(await unset.json(), { environment: 'UNKNOWN', siteUrl: null });
+  const wrongAudience = await request('/ops/api/config', { headers: await signedHeaders('other') }, configBindings);
+  assert.equal(wrongAudience.status, 403);
+
   t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [] }));
   assert.equal((await request('/ops/api/queue', { headers }, bindings)).status, 200);
 });
