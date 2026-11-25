@@ -116,3 +116,8 @@ WEBSITE_REPO_BRANCH = "main"
 
 [env.preview.triggers]
 crons = []
+
+[env.preview.assets]
+directory = "./ops"
+binding = "ASSETS"
+run_worker_first = true

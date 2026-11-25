@@ -377,10 +377,62 @@ function failureMetadataReset() {
   };
 }
 
+function unsafeOpsAssetPath(path) {
+  // Decode until stable so encoded traversal cannot reach the asset binding.
+  try {
+    while (true) {
+      if (path.includes('..') || path.includes('\\')) return true;
+      const decoded = decodeURIComponent(path);
+      if (decoded === path) return false;
+      path = decoded;
+    }
+  } catch {
+    return true;
+  }
+}
+
+async function serveOpsAsset(request, assets, url, rawPath) {
+  if (unsafeOpsAssetPath(rawPath) || unsafeOpsAssetPath(url.pathname)) {
+    return json({ error: 'invalid asset path' }, 400);
+  }
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const response = json({ error: 'method not allowed' }, 405);
+    response.headers.set('Allow', 'GET, HEAD');
+    return response;
+  }
+
+  const path = url.pathname.slice('/ops'.length);
+  url.pathname = path && path !== '/' ? path : '/index.html';
+  url.search = '';
+  const fetchAsset = () => assets.fetch(new Request(url, { method: request.method, redirect: 'manual' }));
+  let response = await fetchAsset();
+
+  // Workers' default HTML handling redirects /index.html to /. Resolve that
+  // redirect inside the binding so /ops stays under the Access-gated prefix.
+  if (url.pathname === '/index.html' && [301, 302, 307, 308].includes(response.status)) {
+    const location = response.headers.get('Location');
+    if (location && new URL(location, url).href === `${url.origin}/`) {
+      url.pathname = '/';
+      response = await fetchAsset();
+    }
+  }
+  if ([301, 302, 307, 308].includes(response.status)) return json({ error: 'not found' }, 404);
+
+  const output = new Response(request.method === 'HEAD' ? null : response.body, response);
+  output.headers.set('Cache-Control', 'private, no-store');
+  return output;
+}
+
 // ── entry ────────────────────────────────────────────────────────────────────
 export async function handleOps(request, env, ctx = {}, deps = {}) {
   const url = new URL(request.url);
-  if (!url.pathname.startsWith('/ops/api/')) return null;
+  const apiRequest = url.pathname.startsWith('/ops/api/');
+  const isAssetRoute = path => (path === '/ops' || path.startsWith('/ops/')) && !path.startsWith('/ops/api/');
+  const rawPath = env.ASSETS
+    ? request.url.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1] || url.pathname
+    : url.pathname;
+  const assetRequest = env.ASSETS && (isAssetRoute(url.pathname) || isAssetRoute(rawPath));
+  if (!apiRequest && !assetRequest) return null;
 
   const verify = deps.verify || verifyAccessRequest;
   const now = deps.now || Date.now;
@@ -388,6 +440,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
 
   const auth = await verify(request, env);
   if (!auth.ok) return json({ error: auth.error }, auth.status || 403);
+  if (assetRequest) return serveOpsAsset(request, env.ASSETS, url, rawPath);
 
   if (request.method === 'GET' && sub === '/config') {
     return json({
