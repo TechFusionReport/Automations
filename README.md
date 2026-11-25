@@ -9,4 +9,9 @@ Run the available tests with:
 ```sh
 node --test tests/*.test.js tests/*.test.mjs
 ```
-                   
+
+## Approval receipts
+
+`OPS_RECEIPT_KEY` is a Worker secret used to sign and verify /ops approval receipts.
+`POST /receipts/verify` uses the Worker’s existing authentication and returns a
+verdict for a live Content Catalog record and gate.

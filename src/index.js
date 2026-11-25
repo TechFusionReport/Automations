@@ -5,6 +5,7 @@ import DiscoveryAgent    from './agents/discovery.js';
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
 import { verifyAccessRequest } from './ops/access.js';
+import { handleReceiptVerification } from './ops/receipts.js';
 import { handleOps }          from './ops/router.js';
 
 // ─── Simple Router ───────────────────────────────────────────────────────────
@@ -79,6 +80,7 @@ export default {
     }
 
     const router = new Router();
+    router.post('/receipts/verify', handleReceiptVerification);
 
     // ── Core pipeline endpoints ────────────────────────────────────────────
     router.post('/discover', async (req, env) => {

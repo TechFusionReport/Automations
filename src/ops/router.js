@@ -16,6 +16,8 @@ import { generateKeyPointComparison } from './key-point-comparison.js';
 import { buildCommandCenter } from './command-center.js';
 import { buildObservability } from './observability.js';
 import { buildLegacyMonitoring } from './legacy-monitoring.js';
+import { readSignedReceipt, recordContentHash } from './receipts.js';
+import { hasReceiptKey, normalizePageId, receiptKey, signReceipt } from '../utils/ops-receipts.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -337,19 +339,30 @@ async function countFeatured(client, dbId) {
   return count;
 }
 
-async function auditedProperties(client, pageId, actor, action, changes = {}, note = '') {
-  const detail = mapDraftDetail(await client.retrieve(pageId));
-  const entry = `[${new Date().toISOString()}] ${actor || 'unknown'} — ${action}${note ? ` — ${note}` : ''}`;
+function withAudit(detail, actor, action, changes, note, timestamp = Date.now()) {
+  const entry = `[${new Date(timestamp).toISOString()}] ${actor || 'unknown'} — ${action}${note ? ` — ${note}` : ''}`;
   const audit = [detail.reviewAuditLog, entry].filter(Boolean).join('\n').slice(-15000);
-  return { detail, properties: { ...changes, ...richTextPatchBody(P.reviewAuditLog, audit) } };
+  return { ...changes, ...richTextPatchBody(P.reviewAuditLog, audit) };
 }
 
-// ── gate actions ─────────────────────────────────────────────────────────────
-// Pipeline State-Transition Contract §2: checkboxes are the human-authorization
-// signal, Status is n8n's automation-progress narration. approve-transcription and
-// approve-publish are handled explicitly below and must NOT write Status. Rejection
-// is the one deliberate exception (§2, §7): a terminal human decision, so /ops still
-// writes Status directly for it.
+async function auditedProperties(client, pageId, actor, action, changes = {}, note = '') {
+  const detail = mapDraftDetail(await client.retrieve(pageId));
+  return { detail, properties: withAudit(detail, actor, action, changes, note) };
+}
+
+const APPROVAL_GATES = new Map([
+  ['/actions/approve-transcription', 1],
+  ['/actions/approve-publish', 2],
+]);
+const REVOKES_PUBLISH = new Set(['/actions/save-draft', '/actions/return-revision', '/actions/reject']);
+const RECEIPT_ACTIONS = new Set([...APPROVAL_GATES.keys(), ...REVOKES_PUBLISH, '/actions/bulk']);
+
+async function revokeReceipts(env, pageId, reject) {
+  await env.AGENT_STATE.delete(receiptKey(pageId, 2));
+  if (reject) await env.AGENT_STATE.delete(receiptKey(pageId, 1));
+}
+
+// Approval writes keep the existing checkboxes and leave Status automation-owned.
 const ACTION_STATUS = {
   '/actions/reject': S.rejected,
 };
@@ -376,12 +389,12 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
   const auth = await verify(request, env);
   if (!auth.ok) return json({ error: auth.error }, auth.status || 403);
 
-  const secrets = await getSecrets(env);
-  const token = secrets.notion_token || env.NOTION_TOKEN;
-  const dbId = secrets.notion_database_id || DEFAULT_DB;
-  const client = deps.client || notionClient(token, {});
-
   try {
+    const secrets = await getSecrets(env);
+    const token = secrets.notion_token || env.NOTION_TOKEN;
+    const dbId = secrets.notion_database_id || DEFAULT_DB;
+    const client = deps.client || notionClient(token, {});
+
     if (request.method === 'GET') {
       if (sub.startsWith('/drafts/')) {
         const pageId = sub.slice('/drafts/'.length);
@@ -425,6 +438,9 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
             ? featuredPatchBody(allowed[body.action])
             : statusPatchBody(allowed[body.action]);
           const audited = await auditedProperties(client, id, actor, `bulk:${body.action}`, change, body.note);
+          if (body.action === 'reject' || body.action === 'revision') {
+            await revokeReceipts(env, id, body.action === 'reject');
+          }
           await client.patch(id, audited.properties);
         }
         return json({ ok: true, updated: ids.length, message: `${ids.length} records updated` });
@@ -444,29 +460,33 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         return json({ ok: true, comparison, generatedAt: new Date().toISOString(), message: 'Comparison generated' });
       }
 
+      if ((APPROVAL_GATES.has(sub) || REVOKES_PUBLISH.has(sub)) && !normalizePageId(pageId)) {
+        return json({ error: 'valid pageId required' }, 400);
+      }
+
       if (sub === '/actions/save-draft') {
         const changes = {
           ...richTextPatchBody(P.blogDraft, body.blogDraft),
           ...richTextPatchBody(P.reviewerNotes, body.reviewerNotes),
         };
         const audited = await auditedProperties(client, pageId, actor, 'draft saved', changes, body.note);
+        await revokeReceipts(env, pageId, false);
         await client.patch(pageId, audited.properties);
         return json({ ok: true, message: 'Draft and review notes saved' });
       }
 
       let changes;
-      let action = sub.slice('/actions/'.length);
+      const action = sub.slice('/actions/'.length);
+      const gate = APPROVAL_GATES.get(sub);
       if (sub === '/actions/toggle-featured') {
         changes = featuredPatchBody(body.value === true);
       } else if (sub === '/actions/approve-transcription') {
-        // Checkbox-only — n8n's Enhancement workflow owns Status from here.
         changes = {
           ...checkboxPatchBody(P.approvedForTranscription, true),
           [P.transcriptionApprovedAt]: { date: { start: new Date(now()).toISOString() } },
           ...failureMetadataReset(),
         };
       } else if (sub === '/actions/approve-publish') {
-        // Checkbox-only — n8n's Publisher workflow owns Status from here.
         changes = {
           ...checkboxPatchBody(P.publishToGithub, true),
           ...failureMetadataReset(),
@@ -488,13 +508,42 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         changes = statusPatchBody(nextStatus);
       }
       if (body.reviewerNotes != null) changes = { ...changes, ...richTextPatchBody(P.reviewerNotes, body.reviewerNotes) };
-      const audited = await auditedProperties(client, pageId, actor, action, changes, body.note);
-      await client.patch(pageId, audited.properties);
+      if (gate) {
+        if (!hasReceiptKey(env.OPS_RECEIPT_KEY) || !env.AGENT_STATE) {
+          return json({ error: 'Receipt service unavailable' }, 503);
+        }
+        if (typeof auth.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(auth.email)) {
+          return json({ error: 'Approver email required' }, 403);
+        }
+        // Drafting changes the payload after gate 1. Check its signature and
+        // page/gate binding here; gate 2 binds the new publish payload.
+        if (gate === 2 && !await readSignedReceipt(env, pageId, 1)) {
+          return json({ error: 'A valid gate-1 receipt is required' }, 409);
+        }
+        const page = await client.retrieve(pageId);
+        if (normalizePageId(page?.id) !== normalizePageId(pageId)) {
+          return json({ error: 'Receipt service unavailable' }, 502);
+        }
+        const contentHash = await recordContentHash(client, page);
+        const issuedAt = now();
+        const receipt = await signReceipt(env.OPS_RECEIPT_KEY, {
+          pageId, gate, approver: auth.email, contentHash, issuedAt,
+        });
+        const auditAction = `${action} (receipt ${receipt.signature.slice(0, 8)})`;
+        const properties = withAudit(mapDraftDetail(page), actor, auditAction, changes, body.note, issuedAt);
+        await client.patch(pageId, properties);
+        await env.AGENT_STATE.put(receiptKey(pageId, gate), JSON.stringify(receipt));
+      } else {
+        const audited = await auditedProperties(client, pageId, actor, action, changes, body.note);
+        if (REVOKES_PUBLISH.has(sub)) await revokeReceipts(env, pageId, sub === '/actions/reject');
+        await client.patch(pageId, audited.properties);
+      }
       return json({ ok: true, pageId, message: 'Review decision saved' });
     }
 
     return json({ error: 'not found' }, 404);
   } catch (e) {
+    if (RECEIPT_ACTIONS.has(sub)) return json({ error: 'Review decision could not be saved' }, 502);
     // Surface Notion/other failures inline — never swallow (Agents.md rule).
     return json({ error: e.message }, 502);
   }
