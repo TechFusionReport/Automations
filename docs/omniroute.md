@@ -31,7 +31,7 @@ Contract checked against `https://omniroute.techfusionreport.com` on 2026-08-13 
 - Compatibility: OpenAI Chat Completions request/response format
 - Chain invocation: set the ordinary `model` field to the exact combo ID `TFR Free Chain`
 - Catalog proof: `GET /v1/models` returns `{ "id": "TFR Free Chain", "owned_by": "combo" }`
-- Authentication: the live instance accepted the verified chat request without credentials. It advertises both `Authorization` and `x-api-key`; the client supports an optional bearer key so authentication can be enabled without code changes.
+- Authentication: the gateway is now behind Cloudflare Access. See Authentication below for the current Worker requirements.
 - Non-streaming response: standard `chat.completion`; text is at `choices[0].message.content`
 - Streaming response: `text/event-stream` with `chat.completion.chunk` events, followed by `data: [DONE]`
 - Provider attribution: the live response reliably exposed `x-omniroute-provider` and `x-omniroute-model`, plus `x-omniroute-decision`. The client records only the two explicit attribution headers. It does not guess when either is absent.
@@ -41,6 +41,18 @@ Contract checked against `https://omniroute.techfusionreport.com` on 2026-08-13 
 - Timeouts: the application aborts its request after its configured timeout. Provider timeout/retry behavior remains an OmniRoute concern.
 
 The Worker currently requests non-streaming completions. Streaming was verified for compatibility but is not needed by the migrated workflows.
+
+## Authentication
+
+OmniRoute is behind a Cloudflare Access application. Use a dedicated Access
+service token for the Worker and provide both Worker Secrets:
+`OMNIROUTE_ACCESS_CLIENT_ID` and `OMNIROUTE_ACCESS_CLIENT_SECRET`. The client
+and the Command Center probe send the pair only to OmniRoute. If OmniRoute also
+requires its API credential, the existing optional bearer header still applies.
+
+An Access redirect or recognizable Access denial is classified as an
+authentication error. Authentication failures fail closed, so the Worker
+does not invoke the Gemini fallback for them.
 
 ## Configuration
 
@@ -54,17 +66,19 @@ Non-secret defaults live in `wrangler.toml`:
 | `OMNIROUTE_TIMEOUT_MS` | `30000` | Per-request application timeout |
 | `OMNIROUTE_FALLBACK_ENABLED` | `true` | Allow one direct Gemini outage fallback |
 
-If OmniRoute authentication is enabled, add `omniroute_api_key` to the JSON object stored at the existing `CONTENT_KV` key `secrets`. Do not commit it. The existing `gemini_api_key` must remain during migration because it powers the outage fallback.
+Worker Secret bindings take precedence over the optional KV fields
+`omniroute_access_client_id` and `omniroute_access_client_secret`. Empty
+bindings fall back to KV. The client sends neither header if it only has one
+value and emits a configuration warning naming the missing binding. Keep the
+existing `omniroute_api_key` for optional bearer authentication and
+`gemini_api_key` for outage fallback.
 
-Authentication rollout order is mandatory to avoid a hard LLM outage:
+Roll out in this order:
 
-1. Create the OmniRoute API credential without enabling global enforcement.
-2. Store it as `omniroute_api_key` in the Worker's existing `CONTENT_KV["secrets"]` JSON object.
-3. Manually verify one authenticated request from the deployed shared client succeeds through `TFR Free Chain`.
-4. Only after that succeeds, enable OmniRoute API-key enforcement.
-5. Verify unauthenticated chat requests are rejected and authenticated agent traffic remains healthy.
-
-Do not activate enforcement and fail-closed client behavior simultaneously without validating the deployed credential first. If validation fails, leave enforcement disabled, correct the credential/configuration, and repeat the authenticated check. Never print the credential in commands, logs, screenshots, or documentation.
+1. Create a dedicated Cloudflare Access service token and add it to the OmniRoute Access policy.
+2. Set both Worker Secrets on the preview Worker.
+3. Verify an authenticated preview request and the Command Center probe.
+4. Promote after verification and configure both Secrets for production before relying on the new path.
 
 The same keys can be placed in the KV secret object in lowercase (`omniroute_base_url`, `omniroute_chain`, `omniroute_timeout_ms`, `omniroute_enabled`, and `omniroute_fallback_enabled`), but Worker environment variables take precedence. Central configuration applies to every agent; there are no per-agent OmniRoute endpoints or chain IDs.
 
@@ -87,7 +101,7 @@ Prompts, response content, credentials, and full upstream error bodies are not l
 1. Check structured Worker logs for `event=llm_request`, `errorCategory`, and `fallbackActivated`.
 2. Use the request ID in OmniRoute call logs to inspect the routing decision and provider-side failure.
 3. Confirm `GET /v1/models` still contains the exact `TFR Free Chain` ID.
-4. For `authentication`, add/rotate `omniroute_api_key` in the existing KV secret object.
+4. For an Access authentication block, check the service-token policy and both Worker Secret bindings. For a gateway bearer denial, check the existing OmniRoute API credential.
 5. For repeated `timeout` or `unavailable` events, inspect OmniRoute health and provider cooldowns before increasing the Worker timeout.
 
-Immediate routing rollback does not require a code revert: set `OMNIROUTE_ENABLED` to `false`. All migrated calls then use their legacy Gemini models directly. Keep `OMNIROUTE_FALLBACK_ENABLED=true` during normal operation to prevent the gateway from becoming a single point of failure. For an authentication rollout failure, disable OmniRoute API-key enforcement while correcting the deployed credential; do not rely on Gemini fallback because `401`/`403` intentionally fail closed.
+Immediate routing rollback does not require a code revert: set `OMNIROUTE_ENABLED` to `false`. All migrated calls then use their legacy Gemini models directly. Keep `OMNIROUTE_FALLBACK_ENABLED=true` during normal operation to prevent the gateway from becoming a single point of failure. To remove the new Access headers, unset both Access Worker Secrets and ensure no equivalent KV fallback is configured. If Access still enforces service-token authentication, clearing the pair leaves OmniRoute blocked. Use `OMNIROUTE_ENABLED=false` for an explicit routing rollback.
