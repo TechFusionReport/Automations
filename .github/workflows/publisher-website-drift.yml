@@ -1,0 +1,29 @@
+name: Publisher Website compatibility (informational)
+on:
+  schedule:
+    - cron: '23 8 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  website-main-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automations
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: TechFusionReport/Website
+          ref: main
+          path: website
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'html5lib==1.1'
+      - run: python automations/tests/publisher-integration/check.py automations website
