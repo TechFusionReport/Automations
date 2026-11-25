@@ -156,3 +156,107 @@ test('failed direct fallback is normalized after OmniRoute failure', async () =>
   });
   assert.equal(calls.length, 2);
 });
+
+const accessEnv = {
+  OMNIROUTE_ACCESS_CLIENT_ID: 'id-sentinel',
+  OMNIROUTE_ACCESS_CLIENT_SECRET: 'secret-sentinel',
+};
+const accessMessage = 'OmniRoute blocked by Cloudflare Access (service token missing, wrong, or not in the policy)';
+const redactSentinels = /id-sentinel|secret-sentinel/;
+
+test('Access config prefers Worker bindings and treats empty strings as unset', () => {
+  const kv = { omniroute_access_client_id: 'test-kv-id', omniroute_access_client_secret: 'test-kv-secret' };
+  assert.equal(resolveLlmConfig(accessEnv, kv).accessClientId, accessEnv.OMNIROUTE_ACCESS_CLIENT_ID);
+  assert.equal(resolveLlmConfig(accessEnv, kv).accessClientSecret, accessEnv.OMNIROUTE_ACCESS_CLIENT_SECRET);
+  const fallback = resolveLlmConfig({ OMNIROUTE_ACCESS_CLIENT_ID: '', OMNIROUTE_ACCESS_CLIENT_SECRET: '' }, kv);
+  assert.equal(fallback.accessClientId, kv.omniroute_access_client_id);
+  assert.equal(fallback.accessClientSecret, kv.omniroute_access_client_secret);
+});
+
+test('OmniRoute sends Access and bearer headers while a 503 fallback sends neither', async () => {
+  const calls = [];
+  const llm = client(async (url, options) => {
+    calls.push(options);
+    return url.startsWith('https://omni.example') ? new Response('unavailable', { status: 503 }) : geminiSuccess();
+  }, { ...accessEnv, OMNIROUTE_API_KEY: 'test-omni-bearer' });
+  const result = await llm.completeText({ prompt: 'test', workflow: 'test' });
+  assert.equal(result.telemetry.fallbackReason, 'unavailable');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].redirect, 'manual');
+  assert.deepEqual(calls[0].headers, {
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer test-omni-bearer',
+    'CF-Access-Client-Id': accessEnv.OMNIROUTE_ACCESS_CLIENT_ID,
+    'CF-Access-Client-Secret': accessEnv.OMNIROUTE_ACCESS_CLIENT_SECRET,
+  });
+  assert.deepEqual(calls[1].headers, { 'Content-Type': 'application/json' });
+});
+
+test('partial Access config sends neither header and logs the missing name once per client', async () => {
+  for (const available of Object.keys(accessEnv)) {
+    const events = [];
+    const llm = client(async (_url, { headers }) => {
+      assert.deepEqual(headers, { 'Content-Type': 'application/json' });
+      return omniSuccess();
+    }, { [available]: accessEnv[available] });
+    llm.logger = { log: value => events.push(JSON.parse(value)) };
+    for (let i = 0; i < 2; i++) await llm.completeText({ prompt: 'test', workflow: 'test' });
+    assert.deepEqual(events.filter(event => event.event === 'llm_config_warning'), [{
+      event: 'llm_config_warning',
+      missingVariable: Object.keys(accessEnv).find(name => name !== available),
+    }]);
+    assert.doesNotMatch(JSON.stringify(events), redactSentinels);
+  }
+});
+
+test('unset Access credentials add neither headers nor warnings', async () => {
+  const events = [];
+  const llm = client(async (_url, { headers }) => {
+    assert.deepEqual(headers, { 'Content-Type': 'application/json' });
+    return omniSuccess();
+  });
+  llm.logger = { log: value => events.push(JSON.parse(value)) };
+  await llm.completeText({ prompt: 'test', workflow: 'test' });
+  assert.deepEqual(events.map(event => event.event), ['llm_request']);
+});
+
+for (const [label, status, body, headers] of [
+  ['redirect', 302, '', { Location: 'https://login.example/' }],
+  ['Access header', 403, 'Denied secret-sentinel', { 'cf-access-aud': 'id-sentinel' }],
+  ['HTML denial', 403, '<!doctype html><html>Denied secret-sentinel</html>', { 'content-type': 'text/plain' }],
+]) {
+  test(`OmniRoute ${label} fails closed with the Access message`, async () => {
+    let calls = 0;
+    const events = [];
+    const llm = client(async () => {
+      calls++;
+      return new Response(body, { status, headers });
+    }, accessEnv);
+    llm.logger = { log: value => events.push(JSON.parse(value)) };
+    await assert.rejects(llm.completeText({ prompt: 'test', workflow: 'test' }),
+      { category: 'authentication', status, message: accessMessage });
+    assert.equal(calls, 1);
+    assert.equal(events[0].fallbackActivated, false);
+    assert.doesNotMatch(JSON.stringify(events), redactSentinels);
+  });
+}
+
+test('upstream errors and response attribution cannot expose configured credentials', async () => {
+  const events = [];
+  const llm = client(async () => new Response('secret-sentinel', { status: 503 }), {
+    ...accessEnv, OMNIROUTE_FALLBACK_ENABLED: 'false',
+  });
+  llm.logger = { log: value => events.push(JSON.parse(value)) };
+  const run = () => llm.completeText({ prompt: 'test', workflow: 'test' });
+  await assert.rejects(run(), error => error.category === 'unavailable' && !redactSentinels.test(error.stack));
+  llm.fetch = async () => { throw new Error('id-sentinel secret-sentinel'); };
+  await assert.rejects(run(), error => error.category === 'network' && !redactSentinels.test(error.stack));
+  llm.fetch = async () => response({
+    body: { choices: [{ message: { content: 'test' } }] },
+    responseHeaders: { 'x-request-id': 'echo-id-sentinel', 'x-omniroute-provider': 'secret-sentinel' },
+  });
+  const { telemetry } = await run();
+  assert.equal(telemetry.requestId, null);
+  assert.equal(telemetry.downstreamProvider, null);
+  assert.doesNotMatch(JSON.stringify({ events, telemetry }), redactSentinels);
+});

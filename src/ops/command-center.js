@@ -1,3 +1,5 @@
+import { isOmniRouteAccessBlock, omniRouteHeaders, resolveLlmConfig } from '../utils/llm-client.mjs';
+
 // Read-only TechFusion OS Command Center aggregation.
 // Each source remains authoritative; this module normalizes live state for /ops.
 const TASK_DATABASE_ID = '9a75e952-ff61-40c7-86a1-e364ce60eea6';
@@ -133,6 +135,38 @@ async function probe(fetchFn, name, url, headers = {}) {
   }
 }
 
+async function probeOmniRoute(fetchFn, config) {
+  const started = Date.now();
+  const url = `${config.baseUrl}/v1/models`;
+  const headers = omniRouteHeaders(config);
+  const signal = AbortSignal.timeout(5000);
+  const options = { method: 'GET', headers, signal, redirect: 'manual' };
+  const result = () => ({ name: 'OmniRoute', url, latencyMs: Date.now() - started });
+
+  try {
+    let response;
+    if (Object.keys(headers).length) {
+      try {
+        response = await fetchFn(url, { ...options, redirect: 'error' });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // Fetch conceals the response when redirect:error rejects. A manual
+        // request to the original URL can diagnose a redirect without following it.
+        response = await fetchFn(url, options);
+      }
+    } else {
+      response = await fetchFn(url, options);
+    }
+    const blocked = await isOmniRouteAccessBlock(response);
+    return {
+      ...result(), status: response.ok && !blocked ? 'ok' : 'degraded',
+      httpStatus: response.status, ...(blocked ? { reason: 'blocked by Cloudflare Access' } : {}),
+    };
+  } catch {
+    return { ...result(), status: 'down', httpStatus: null, error: 'OmniRoute probe failed' };
+  }
+}
+
 const settled = async (fn, fallback) => {
   try { return await fn(); }
   catch (error) { return { ...fallback, reason: error.message }; }
@@ -152,9 +186,7 @@ export async function buildCommandCenter(env, secrets = {}, deps = {}) {
     settled(() => readCloudflare(fetchFn, cloudflareToken, cloudflareAccountId), { status: 'error' }),
     Promise.all([
       probe(fetchFn, 'Website', 'https://techfusionreport.com/'),
-      probe(fetchFn, 'OmniRoute', 'https://omniroute.techfusionreport.com/v1/models',
-        (secrets.omniroute_api_key || env.OMNIROUTE_API_KEY)
-          ? { Authorization: `Bearer ${secrets.omniroute_api_key || env.OMNIROUTE_API_KEY}` } : {}),
+      probeOmniRoute(fetchFn, resolveLlmConfig(env, secrets)),
     ]),
   ]);
 

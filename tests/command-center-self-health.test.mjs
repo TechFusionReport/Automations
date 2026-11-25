@@ -58,3 +58,49 @@ test('command center marks current Worker healthy without fetching its own publi
   });
   assert.equal(result.attention.some((item) => item.title.includes('TechFusion API')), false);
 });
+
+test('OmniRoute probe sends Access headers and reports an Access denial without credentials', async () => {
+  const result = await buildCommandCenter({ OMNIROUTE_ACCESS_CLIENT_ID: 'id-sentinel' }, {
+    omniroute_access_client_id: 'unused-test-id',
+    omniroute_access_client_secret: 'secret-sentinel',
+    omniroute_api_key: 'bearer-sentinel',
+  }, {
+    fetch: async (url, { headers, redirect }) => {
+      if (url.endsWith('/v1/models')) {
+        assert.deepEqual(headers, {
+          Authorization: 'Bearer bearer-sentinel',
+          'CF-Access-Client-Id': 'id-sentinel',
+          'CF-Access-Client-Secret': 'secret-sentinel',
+        });
+        assert.equal(redirect, 'error');
+        return new Response('secret-sentinel', { status: 403, headers: { 'cf-access-aud': 'id-sentinel' } });
+      }
+      assert.deepEqual(headers, {});
+      return jsonResponse({});
+    },
+  });
+  const probe = result.services.find(service => service.name === 'OmniRoute');
+  assert.equal(probe.status, 'degraded');
+  assert.equal(probe.reason, 'blocked by Cloudflare Access');
+  assert.equal(probe.httpStatus, 403);
+  assert.doesNotMatch(JSON.stringify(result), /(?:id|secret|bearer)-sentinel/);
+});
+
+test('authenticated probe diagnoses a redirect without following it', async () => {
+  const modes = [];
+  const result = await buildCommandCenter({ OMNIROUTE_ACCESS_CLIENT_ID: 'id-sentinel',
+    OMNIROUTE_ACCESS_CLIENT_SECRET: 'secret-sentinel' }, {}, {
+    fetch: async (url, { redirect }) => {
+      if (!url.endsWith('/v1/models')) return jsonResponse({});
+      modes.push(redirect);
+      if (redirect === 'error') throw new TypeError('redirect with id-sentinel');
+      return new Response(null, { status: 302, headers: { Location: 'https://login.example/' } });
+    },
+  });
+  assert.deepEqual(modes, ['error', 'manual']);
+  const probe = result.services.find(service => service.name === 'OmniRoute');
+  assert.equal(probe.status, 'degraded');
+  assert.equal(probe.reason, 'blocked by Cloudflare Access');
+  assert.equal(probe.httpStatus, 302);
+  assert.doesNotMatch(JSON.stringify(result), /(?:id|secret)-sentinel|login\.example/);
+});
