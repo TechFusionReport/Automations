@@ -12,10 +12,10 @@ import {
   countsFromCache, COUNTED_STATUSES, IN_PIPELINE_STATUSES,
 } from './notion.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
-import { EnhancementOrchestrator } from '../agents/enhancement.js';
+import { generateKeyPointComparison } from './key-point-comparison.js';
 import { buildCommandCenter } from './command-center.js';
 import { buildObservability } from './observability.js';
-import { buildLegacyMonitoring, ingestMonitoring } from './legacy-monitoring.js';
+import { buildLegacyMonitoring } from './legacy-monitoring.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -373,16 +373,6 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
   const now = deps.now || Date.now;
   const sub = url.pathname.slice('/ops/api'.length); // e.g. '/overview'
 
-  // Dedicated Access Service Auth app must protect this exact path at the edge.
-  // The ingest bearer secret below is a separate second authentication layer.
-  if (sub === '/monitoring/ingest') {
-    if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
-    try {
-      const result = await ingestMonitoring(request, env, await getSecrets(env), { now });
-      return json(result.body, result.code);
-    } catch { return json({ error: 'Monitoring ingestion failed' }, 503); }
-  }
-
   const auth = await verify(request, env);
   if (!auth.ok) return json({ error: auth.error }, auth.status || 403);
 
@@ -444,7 +434,7 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
 
       if (sub === '/actions/generate-comparison') {
         const { detail } = await auditedProperties(client, pageId, actor, 'generate comparison');
-        const comparison = await new EnhancementOrchestrator(env).generateKeyPointComparison(detail.transcript, detail.blogDraft);
+        const comparison = await generateKeyPointComparison(env, detail.transcript, detail.blogDraft);
         const changes = {
           ...richTextPatchBody(P.keyPointComparison, comparison),
           [P.comparisonGeneratedAt]: { date: { start: new Date().toISOString() } },
