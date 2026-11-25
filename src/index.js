@@ -4,7 +4,7 @@
 import DiscoveryAgent    from './agents/discovery.js';
 import { PublishingAgent }    from './agents/publishing.js';
 import { PublisherPoller }    from './agents/publisher-poller.js';
-import { verifyAccessRequest } from './ops/access.js';
+import { verifyAccessRequest, verifyServiceTokenRequest } from './ops/access.js';
 import { handleReceiptVerification } from './ops/receipts.js';
 import { handleOps }          from './ops/router.js';
 
@@ -73,9 +73,11 @@ export default {
     if (opsResponse) return opsResponse;
 
     const { pathname } = new URL(request.url);
+    const receiptVerification = request.method === 'POST' && pathname === '/receipts/verify';
     if (pathname !== '/health' && !pathname.startsWith('/ops/')) {
       const authorized = await matchesWorkerSecret(request, env)
-        || (await verifyAccessRequest(request, env).catch(() => ({ ok: false }))).ok;
+        || (await verifyAccessRequest(request, env).catch(() => ({ ok: false }))).ok
+        || (receiptVerification && (await verifyServiceTokenRequest(request, env)).ok);
       if (!authorized) return json({ error: 'Unauthorized' }, 401);
     }
 

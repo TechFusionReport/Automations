@@ -87,11 +87,7 @@ function audMatches(payloadAud, expected) {
   return expectedAudiences.some((audience) => tokenAudiences.includes(audience));
 }
 
-/**
- * Verify a request carries a valid Cloudflare Access identity.
- * @returns {{ ok: true, email: string } | { ok: false, status: number, error: string }}
- */
-export async function verifyAccessRequest(request, env, { fetchImpl = fetch, now = Date.now } = {}) {
+async function verifyAccessJwt(request, env, { fetchImpl = fetch, now = Date.now } = {}) {
   if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) {
     return { ok: false, status: 500, error: 'Access not configured (ACCESS_TEAM_DOMAIN / ACCESS_AUD allowlist)' };
   }
@@ -133,7 +129,46 @@ export async function verifyAccessRequest(request, env, { fetchImpl = fetch, now
   if (!audMatches(payload.aud, env.ACCESS_AUD)) {
     return { ok: false, status: 403, error: 'audience mismatch' };
   }
-  if (!payload.email) return { ok: false, status: 403, error: 'no email in token' };
+  return { ok: true, payload };
+}
 
-  return { ok: true, email: payload.email };
+/**
+ * Verify a request carries a valid Cloudflare Access identity.
+ * @returns {{ ok: true, email: string } | { ok: false, status: number, error: string }}
+ */
+export async function verifyAccessRequest(request, env, options) {
+  const result = await verifyAccessJwt(request, env, options);
+  if (!result.ok) return result;
+  if (!result.payload.email) return { ok: false, status: 403, error: 'no email in token' };
+  return { ok: true, email: result.payload.email };
+}
+
+async function serviceClientIdsMatch(claim, configured) {
+  const encoder = new TextEncoder();
+  const [actual, expected] = await Promise.all([claim, configured].map(async id => {
+    const bareId = id.replace(/\.access$/, '');
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(bareId)));
+  }));
+  // Both digests have the same size. Accumulate every difference before branching.
+  let difference = 0;
+  for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i];
+  return difference === 0;
+}
+
+/** Verify the dedicated Access service identity for the receipt route. */
+export async function verifyServiceTokenRequest(request, env, options) {
+  const clientId = env.RECEIPT_VERIFIER_CLIENT_ID;
+  if (typeof clientId !== 'string' || !clientId.trim() || clientId === '.access') return { ok: false };
+
+  try {
+    const result = await verifyAccessJwt(request, env, options);
+    if (!result.ok) return { ok: false };
+    const claim = result.payload.common_name;
+    if (typeof claim !== 'string' || !claim || !await serviceClientIdsMatch(claim, clientId)) {
+      return { ok: false };
+    }
+    return { ok: true, clientId };
+  } catch {
+    return { ok: false };
+  }
 }
