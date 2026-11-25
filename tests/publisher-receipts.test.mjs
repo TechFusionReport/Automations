@@ -343,3 +343,40 @@ test('related cards need both a target index entry and an article file at the re
   assert.equal(f.calls.filter(call => call.endpoint === '/contents/posts.json').length, 1);
   assert.equal(f.calls.filter(call => call.endpoint === '/contents/_posts').length, 1);
 });
+
+const affiliateDraft = 'The github repository covers hosting and notes.';
+
+async function renderAffiliateDraft(t, draft, flag) {
+  const f = fixture(t, flag === undefined ? {} : { AFFILIATE_LINKS_ENABLED: flag });
+  f.page.properties[P.blogDraft] = rich(draft);
+  await f.approve(1, 2);
+  assert.equal((await f.run()).processed, 1);
+  return f.gh.trees[0][0].content;
+}
+
+for (const flag of [undefined, 'false', '1', 'TRUE', '']) {
+  test(`affiliate keyword links stay off when the flag is ${flag === undefined ? 'unset' : JSON.stringify(flag)}`, async t => {
+    const html = await renderAffiliateDraft(t, affiliateDraft, flag);
+    assert.ok(html.includes(`<p>${affiliateDraft}</p>`));
+    assert.doesNotMatch(html, /\?ref=techfusion|<a[^>]*>(?:github|repository|hosting|notes)<\/a>/);
+  });
+}
+
+test('exact true retains the existing affiliate keyword links', async t => {
+  const html = await renderAffiliateDraft(t, affiliateDraft, 'true');
+  for (const [keyword, url] of [
+    ['github', 'https://github.com'],
+    ['repository', 'https://github.com'],
+    ['hosting', 'https://vercel.com'],
+    ['notes', 'https://notion.so'],
+  ]) {
+    assert.ok(html.includes(`<a href="${url}?ref=techfusion" rel="noopener noreferrer">${keyword}</a>`));
+  }
+});
+
+test('disabled affiliate placeholders become plain text and hand-written links stay intact', async t => {
+  const html = await renderAffiliateDraft(t,
+    'Use [AFFILIATE: Notion] or [affiliate:  vercel ]. See [the repository](https://example.invalid/docs?source=editor).');
+  assert.ok(html.includes('<p>Use Notion or vercel. See <a href="https://example.invalid/docs?source=editor" rel="noopener noreferrer">the repository</a>.</p>'));
+  assert.doesNotMatch(html, /affiliate:|\?ref=techfusion/i);
+});
