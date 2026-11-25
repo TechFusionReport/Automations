@@ -1,6 +1,7 @@
 const DEFAULT_BASE_URL = 'https://omniroute.techfusionreport.com';
 const DEFAULT_CHAIN = 'TFR Free Chain';
 const DEFAULT_TIMEOUT_MS = 30000;
+const ACCESS_BLOCK_MESSAGE = 'OmniRoute blocked by Cloudflare Access (service token missing, wrong, or not in the policy)';
 
 export class LlmRequestError extends Error {
   constructor(message, { category = 'unknown', status = 0, retryable = false } = {}) {
@@ -38,8 +39,23 @@ function classifyStatus(status) {
   return 'unknown';
 }
 
-function safeErrorBody(value) {
-  return String(value || '').replace(/\s+/g, ' ').slice(0, 300);
+export function omniRouteHeaders({ apiKey, accessClientId, accessClientSecret }) {
+  return {
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    ...(accessClientId && accessClientSecret ? {
+      'CF-Access-Client-Id': accessClientId,
+      'CF-Access-Client-Secret': accessClientSecret,
+    } : {}),
+  };
+}
+
+export async function isOmniRouteAccessBlock(response) {
+  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) return true;
+  if (response.status !== 401 && response.status !== 403) return false;
+  if (response.headers?.has?.('cf-access-aud') || response.headers?.has?.('cf-access-domain')
+    || /^(?:text\/html|application\/xhtml\+xml)\b/i.test(headerValue(response.headers, 'content-type') || '')) return true;
+  const body = await response.text().catch(() => '');
+  return /^\s*(?:<!doctype\s+html\b|<(?:html|head|body|title|meta|form|div|h[1-6]|p)(?:\s|>))/i.test(body);
 }
 
 export function resolveLlmConfig(env = {}, secrets = {}) {
@@ -50,6 +66,8 @@ export function resolveLlmConfig(env = {}, secrets = {}) {
     chain: String(env.OMNIROUTE_CHAIN ?? secrets.omniroute_chain ?? DEFAULT_CHAIN),
     timeoutMs: positiveInteger(env.OMNIROUTE_TIMEOUT_MS ?? secrets.omniroute_timeout_ms, DEFAULT_TIMEOUT_MS),
     apiKey: secrets.omniroute_api_key || env.OMNIROUTE_API_KEY || '',
+    accessClientId: env.OMNIROUTE_ACCESS_CLIENT_ID || secrets.omniroute_access_client_id || '',
+    accessClientSecret: env.OMNIROUTE_ACCESS_CLIENT_SECRET || secrets.omniroute_access_client_secret || '',
   };
 }
 
@@ -91,12 +109,21 @@ export class LlmClient {
     const started = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`;
+    const headers = { 'Content-Type': 'application/json', ...omniRouteHeaders(this.config) };
+
+    const { accessClientId, accessClientSecret } = this.config;
+    if (!this.warnedPartialAccess && Boolean(accessClientId) !== Boolean(accessClientSecret)) {
+      this.warnedPartialAccess = true;
+      this.log({
+        event: 'llm_config_warning',
+        missingVariable: accessClientId ? 'OMNIROUTE_ACCESS_CLIENT_SECRET' : 'OMNIROUTE_ACCESS_CLIENT_ID',
+      });
+    }
 
     try {
       const response = await this.fetch(`${this.config.baseUrl}/v1/chat/completions`, {
         method: 'POST',
+        redirect: 'manual',
         headers,
         signal: controller.signal,
         body: JSON.stringify({
@@ -109,9 +136,9 @@ export class LlmClient {
       });
 
       if (!response.ok) {
-        const category = classifyStatus(response.status);
-        const detail = safeErrorBody(await response.text().catch(() => ''));
-        throw new LlmRequestError(`OmniRoute ${category} error (${response.status})${detail ? `: ${detail}` : ''}`, {
+        const blocked = await isOmniRouteAccessBlock(response);
+        const category = blocked ? 'authentication' : classifyStatus(response.status);
+        throw new LlmRequestError(blocked ? ACCESS_BLOCK_MESSAGE : `OmniRoute ${category} error (${response.status})`, {
           category,
           status: response.status,
           retryable: response.status === 429 || response.status >= 500,
@@ -124,7 +151,7 @@ export class LlmClient {
         throw new LlmRequestError('OmniRoute returned a malformed chat completion', { category: 'malformed_response' });
       }
 
-      const telemetry = {
+      const telemetry = this.redactTelemetry({
         workflow,
         route: 'omniroute',
         requestedModel: this.config.chain,
@@ -135,7 +162,7 @@ export class LlmClient {
         requestId: headerValue(response.headers, 'x-omniroute-request-id') || headerValue(response.headers, 'x-request-id'),
         downstreamProvider: headerValue(response.headers, 'x-omniroute-provider'),
         downstreamModel: headerValue(response.headers, 'x-omniroute-model'),
-      };
+      });
       this.log(telemetry);
       return { text, telemetry };
     } catch (error) {
@@ -143,7 +170,7 @@ export class LlmClient {
         ? new LlmRequestError(`OmniRoute timed out after ${this.config.timeoutMs}ms`, { category: 'timeout', retryable: true })
         : error instanceof LlmRequestError
           ? error
-          : new LlmRequestError(`OmniRoute network error: ${error?.message || 'unknown error'}`, { category: 'network', retryable: true });
+          : new LlmRequestError('OmniRoute network error', { category: 'network', retryable: true });
       this.log({
         workflow,
         route: 'omniroute',
@@ -155,7 +182,7 @@ export class LlmClient {
         retryCount: 0,
         fallbackActivated: this.shouldFallback(normalized),
       });
-      throw normalized;
+      throw new LlmRequestError(this.redactValue(normalized.message) ?? 'LLM request failed', normalized);
     } finally {
       clearTimeout(timer);
     }
@@ -185,8 +212,7 @@ export class LlmClient {
         }
       );
       if (!response.ok) {
-        const detail = safeErrorBody(await response.text().catch(() => ''));
-        throw new LlmRequestError(`Gemini fallback error (${response.status})${detail ? `: ${detail}` : ''}`, {
+        throw new LlmRequestError(`Gemini fallback error (${response.status})`, {
           category: classifyStatus(response.status),
           status: response.status,
           retryable: response.status === 429 || response.status >= 500,
@@ -197,7 +223,7 @@ export class LlmClient {
       if (typeof text !== 'string' || !text.trim()) {
         throw new LlmRequestError('Gemini fallback returned a malformed response', { category: 'malformed_response' });
       }
-      const telemetry = {
+      const telemetry = this.redactTelemetry({
         workflow,
         route: 'direct_fallback',
         requestedModel: legacyModel,
@@ -208,7 +234,7 @@ export class LlmClient {
         fallbackReason: reason,
         downstreamProvider: 'google',
         downstreamModel: legacyModel,
-      };
+      });
       this.log(telemetry);
       return { text, telemetry };
     } catch (error) {
@@ -216,7 +242,7 @@ export class LlmClient {
         ? new LlmRequestError(`Gemini fallback timed out after ${this.config.timeoutMs}ms`, { category: 'timeout', retryable: true })
         : error instanceof LlmRequestError
           ? error
-          : new LlmRequestError(`Gemini fallback network error: ${error?.message || 'unknown error'}`, { category: 'network', retryable: true });
+          : new LlmRequestError('Gemini fallback network error', { category: 'network', retryable: true });
       this.log({
         workflow,
         route: 'direct_fallback',
@@ -229,14 +255,24 @@ export class LlmClient {
         fallbackActivated: reason !== 'disabled',
         fallbackReason: reason,
       });
-      throw normalized;
+      throw new LlmRequestError(this.redactValue(normalized.message) ?? 'LLM request failed', normalized);
     } finally {
       clearTimeout(timer);
     }
   }
 
+  redactValue(value) {
+    const credentials = [this.config.accessClientId, this.config.accessClientSecret, this.config.apiKey,
+      this.secrets.gemini_api_key || this.env.GEMINI_API_KEY].filter(Boolean);
+    return typeof value === 'string' && credentials.some(credential => value.includes(credential)) ? null : value;
+  }
+
+  redactTelemetry(event) {
+    return Object.fromEntries(Object.entries(event).map(([name, value]) => [name, this.redactValue(value)]));
+  }
+
   log(event) {
-    this.logger.log(JSON.stringify({ event: 'llm_request', ...event }));
+    this.logger.log(JSON.stringify(this.redactTelemetry({ event: 'llm_request', ...event })));
   }
 }
 
