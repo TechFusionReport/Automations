@@ -4,10 +4,10 @@ import {
 } from '../utils/ops-receipts.js';
 import { notionClient } from './notion.js';
 
-export async function recordContentHash(client, page) {
+async function readPublishPayload(client, page) {
   const props = page.properties || {};
   const richText = name => props[name]?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
-  // Match the poller's block-first draft and property mapping until P4 can share it.
+  // Publish from the same block-first snapshot that receipts authorize.
   const blocks = await client.listBlocks(page.id, 50);
   let content;
   for (const block of blocks.results || []) {
@@ -25,7 +25,7 @@ export async function recordContentHash(client, page) {
 
   const title = props[P.title]?.title?.[0]?.text?.content || 'Untitled';
   const thumbnail = props[P.thumbnail];
-  return hashPublishPayload({
+  return {
     title,
     content: content || richText(P.blogDraft) || null,
     seoTitle: richText(P.seoTitle) || title,
@@ -41,7 +41,11 @@ export async function recordContentHash(client, page) {
     featured: props[P.featured]?.checkbox || false,
     internalLinks: richText(P.internalLinks) || null,
     imageAltText: richText(P.imageAltText) || null,
-  });
+  };
+}
+
+export async function recordContentHash(client, page, payload) {
+  return hashPublishPayload(payload ?? await readPublishPayload(client, page));
 }
 
 export async function readSignedReceipt(env, pageId, gate) {
@@ -52,7 +56,7 @@ export async function readSignedReceipt(env, pageId, gate) {
   return await verifyReceipt(env.OPS_RECEIPT_KEY, receipt, pageId, gate) ? receipt : null;
 }
 
-export async function verifyRecordReceipt(env, client, pageId, gate) {
+export async function verifyRecordReceipt(env, client, pageId, gate, { snapshot = false } = {}) {
   if (!hasReceiptKey(env.OPS_RECEIPT_KEY)) return { valid: false, reason: 'unavailable' };
   try {
     const receipt = await readSignedReceipt(env, pageId, gate);
@@ -64,9 +68,10 @@ export async function verifyRecordReceipt(env, client, pageId, gate) {
     if (!page || normalizePageId(page.id) !== normalizePageId(pageId)) {
       return { valid: false, reason: 'unavailable' };
     }
-    const hash = await recordContentHash(client, page);
+    const payload = await readPublishPayload(client, page);
+    const hash = await recordContentHash(client, page, payload);
     return hash === receipt.contentHash
-      ? { valid: true, reason: 'valid' }
+      ? { valid: true, reason: 'valid', ...(snapshot ? { page, payload, hash } : {}) }
       : { valid: false, reason: 'content_changed' };
   } catch {
     return { valid: false, reason: 'unavailable' };
