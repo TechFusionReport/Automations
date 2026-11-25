@@ -512,7 +512,25 @@ if (typeof document !== 'undefined') {
     } catch (e) { toast(e.message, true); }
   }
 
+  async function loadEnvironment() {
+    const config = await api('/config').catch(() => null);
+    const label = ['LIVE', 'PREVIEW'].includes(config?.environment) ? config.environment : 'UNKNOWN';
+    const badge = $('#ops-environment');
+    badge.dataset.environment = label;
+    badge.textContent = label;
+    document.title = `[${label}] TechFusion OS`;
+    $('#catalog-link').textContent = `Content Catalog (${label})`;
+
+    if (config?.siteUrl?.startsWith('https://')) {
+      const siteLink = $('#ops-site-link');
+      siteLink.href = config.siteUrl;
+      siteLink.textContent = `View ${label} site`;
+      $('#editorial-nav').hidden = false;
+    }
+  }
+
   function init() {
+    void loadEnvironment();
     document.body.addEventListener('input', (ev) => {
       if (ev.target.id === 'draft-editor') {
         state.dirtyDraft = true;

@@ -389,6 +389,13 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
   const auth = await verify(request, env);
   if (!auth.ok) return json({ error: auth.error }, auth.status || 403);
 
+  if (request.method === 'GET' && sub === '/config') {
+    return json({
+      environment: env.OPS_ENV_LABEL || 'UNKNOWN',
+      siteUrl: env.OPS_SITE_URL?.startsWith('https://') ? env.OPS_SITE_URL : null,
+    });
+  }
+
   try {
     const secrets = await getSecrets(env);
     const token = secrets.notion_token || env.NOTION_TOKEN;

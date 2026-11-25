@@ -33,6 +33,8 @@ max_batch_size = 1
 max_batch_timeout = 30
 
 [vars]
+OPS_ENV_LABEL = "LIVE"
+OPS_SITE_URL = "https://techfusionreport.com"
 NOTION_DATABASE_ID = "1fbbd080de92804389aadc02853c15c7"
 # Central LLM routing. If OmniRoute auth is enabled, store the credential in
 # CONTENT_KV's `secrets` object as `omniroute_api_key`; never commit it here.
@@ -94,6 +96,8 @@ max_batch_size = 1
 max_batch_timeout = 30
 
 [env.preview.vars]
+OPS_ENV_LABEL = "PREVIEW"
+OPS_SITE_URL = "https://techfusionreport.github.io/Website-preview/"
 NOTION_DATABASE_ID = "3c9bd080de9280989eb3e87cf9a47da1"
 OMNIROUTE_ENABLED = "true"
 OMNIROUTE_BASE_URL = "https://omniroute.techfusionreport.com"
@@ -101,7 +105,7 @@ OMNIROUTE_CHAIN = "TFR Free Chain"
 OMNIROUTE_TIMEOUT_MS = "30000"
 OMNIROUTE_FALLBACK_ENABLED = "true"
 ACCESS_TEAM_DOMAIN = "jsmithhomelab"
-ACCESS_AUD = "237b90bc3ae13f3d86ea609fc2c902b2801e130eb338f105a6b66bb3e90ba032"
+ACCESS_AUD = "983cd5ec68b9701b196dada2bd837200873a68affee8dd7a5e4f4c753d9ad5c2"
 # Preview Ops infrastructure view; service-token credentials remain in preview CONTENT_KV.
 PROMETHEUS_BASE_URL = "https://prometheus.techfusionreport.com"
 PROMETHEUS_TIMEOUT_MS = "5000"
