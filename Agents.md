@@ -30,7 +30,7 @@ When Justin uses these phrases, this is exactly what they mean. Never interpret 
 | **Automations repo** | `TechFusionReport/Automations` (this repo) |
 | **Website repo** | `TechFusionReport/Website` |
 | **deploy it** | Commit to main → Cloudflare Git integration auto-deploys. Never run wrangler manually. |
-| **the poller** | Whichever of `enhancement-poller.js` or `publisher-poller.js` is relevant in context |
+| **the poller** | `publisher-poller.js` |
 | **end-to-end test** | One full record: discovery → Content Catalog v2 → enhancement → publish → GitHub Pages |
 
 **Priority hierarchy:**
@@ -68,9 +68,9 @@ YouTube RSS / HackerNews / RSS feeds
         ↓
   Notion Content Catalog v2
         ↓
-  enhancement-poller.js (30-min cron) — Gemini AI
+  n8n drafting and /ops approvals
         ↓
-  publisher-poller.js (30-min cron) — GitHub Pages commit
+  publisher-poller.js — GitHub Pages publishing once enabled
         ↓
   techfusionreport.com
 ```
@@ -81,9 +81,7 @@ src/
   index.js                   — Worker entry, route handler, cron dispatcher
   agents/
     discovery.js             — RSS/YouTube/HackerNews (v6.1.0)
-    enhancement.js           — Gemini AI content agent
     publishing.js            — GitHub Pages publishing agent
-    enhancement-poller.js    — 30-min Notion poll for enhancement queue
     publisher-poller.js      — 30-min Notion poll for publish queue
   utils/                     — Empty placeholder, intentional
 wrangler.toml                — KV bindings, cron schedule, queues
@@ -94,7 +92,7 @@ wrangler.toml                — KV bindings, cron schedule, queues
 - **Creator DB:** `0403b4267a54467a8bfd7dfb2cc4a7a8`
 - **Option D Record Template:** `325bd080-de92-813b-9322-cf1e63d512de`
 - **Worker URL:** `https://techfusion-api.quiet-shadow-2fce.workers.dev`
-- **Cron:** `*/30 * * * *`
+- **Worker crons:** paused
 
 ### Notion Schema Notes
 - `Status` uses `{ status: { name: "..." } }` — NOT `select`
@@ -149,7 +147,7 @@ Codex operates in a sandboxed cloud environment. These rules are non-negotiable.
 **What Codex CAN do in this repo:**
 - Read and edit all JS worker files under `src/`
 - Write new agents, utility functions, and GitHub Actions workflows
-- Fix bugs in discovery.js, enhancement.js, publishing.js
+- Fix bugs in discovery.js and publishing.js
 - Write shell scripts for server-side use (human runs them)
 - Write n8n workflow JSON exports and webhook handler modules
 

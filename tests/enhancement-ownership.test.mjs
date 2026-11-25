@@ -10,8 +10,8 @@ test('Cloudflare Worker has no enhancement writer imports or constructors', () =
   assert.doesNotMatch(source, /new\s+Enhancement/);
 });
 
-test('queue enhancement messages are ignored and scheduled polling is publish-only', () => {
-  assert.match(source, /Ignoring retired Worker enhancement message/);
+test('the queue has no drafting cases and scheduled polling is publish-only', () => {
+  assert.doesNotMatch(source, /case '(enhance|research|structure|factcheck|finalize)'/);
   assert.match(source, /n8n owns enhancement; Worker only polls publishing/);
   assert.doesNotMatch(source, /Enhanced:\s*\$\{/);
   assert.match(source, /new PublisherPoller\(env\)\.run\(\)/);

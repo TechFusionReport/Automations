@@ -52,7 +52,7 @@ Schemas, coordination structures, operational config, architecture changes that 
 ### High — Justin's approval always, no exception tier
 Publishing/state-transition logic, any Content Catalog write path, auth/secrets, destructive DB operations, production routing/security.
 
-Known High-tier examples today: `discovery.js`, `enhancement-poller.js`, `publisher-poller.js`, and anything writing to Content Catalog v2's write path. This list is illustrative, not exhaustive — the category (capability) is what actually governs.
+Known High-tier examples today: `discovery.js`, `publisher-poller.js`, and anything writing to Content Catalog v2's write path. This list is illustrative, not exhaustive — the category (capability) is what actually governs.
 
 ## 4. Provenance
 

@@ -202,6 +202,11 @@ export function notionClient(token, { fetchImpl = fetch } = {}) {
       const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, { headers });
       return readOrThrow(res, 'retrieve');
     },
+    async listBlocks(blockId, pageSize) {
+      const query = pageSize ? `?page_size=${pageSize}` : '';
+      const res = await fetchImpl(`https://api.notion.com/v1/blocks/${blockId}/children${query}`, { headers });
+      return readOrThrow(res, 'list blocks');
+    },
     async patch(pageId, properties) {
       const res = await fetchImpl(`https://api.notion.com/v1/pages/${pageId}`, {
         method: 'PATCH', headers, body: JSON.stringify({ properties }),
