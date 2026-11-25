@@ -69,9 +69,13 @@ test('preview assets require Access and production ops asset requests retain the
     const denied = await request(path, {}, { ...env, ASSETS: { fetch } });
     const apiDenied = await request('/ops/api/config');
     assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get('Location'), null);
     assert.deepEqual(await denied.json(), await apiDenied.json());
     assert.equal(denied.headers.get('Cache-Control'), 'private, no-store');
   }
+  const deniedHead = await request('/ops', { method: 'HEAD' }, { ...env, ASSETS: { fetch } });
+  assert.equal(deniedHead.status, 403);
+  assert.equal(deniedHead.headers.get('Location'), null);
   assert.equal(fetch.mock.callCount(), 0);
   const productionRoot = await request('/ops');
   assert.equal(productionRoot.status, 401);
@@ -150,16 +154,23 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
       if (path === '/index.html') return new Response(null, { status: 307, headers: { Location: '/' } });
       if (path === '/') return new Response('<!doctype html>', { headers: { 'Content-Type': 'text/html' } });
       if (path === '/ops.js') return new Response('export {};', { headers: { 'Content-Type': 'text/javascript' } });
-      if (path === '/fonts/DM-Sans.ttf') return new Response('font', { headers: { 'Content-Type': 'font/ttf' } });
+      if (path === '/techfusion-os.css') return new Response('body {}', { headers: { 'Content-Type': 'text/css' } });
       return new Response('Unknown asset', { status: 404 });
     },
   };
   const preview = { ...configBindings, ASSETS };
+  for (const method of ['GET', 'HEAD']) {
+    const redirect = await request('/ops', { method, headers }, preview);
+    assert.equal(redirect.status, 308);
+    assert.equal(redirect.headers.get('Location'), '/ops/');
+    assert.equal(redirect.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(await redirect.text(), '');
+  }
+  assert.deepEqual(assetCalls, []);
   for (const [path, expected, type] of [
     ['/ops/', '<!doctype html>', 'text/html'],
-    ['/ops', '<!doctype html>', 'text/html'],
     ['/ops/ops.js', 'export {};', 'text/javascript'],
-    ['/ops/fonts/DM-Sans.ttf', 'font', 'font/ttf'],
+    ['/ops/techfusion-os.css', 'body {}', 'text/css'],
   ]) {
     const response = await request(path, { headers }, preview);
     assert.equal(response.status, 200);
@@ -168,7 +179,7 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
     assert.equal(await response.text(), expected);
   }
   assert.deepEqual(assetCalls.map(({ path }) => path), [
-    '/index.html', '/', '/index.html', '/', '/ops.js', '/fonts/DM-Sans.ttf',
+    '/index.html', '/', '/ops.js', '/techfusion-os.css',
   ]);
   assert.ok(assetCalls.every(call => !call.access));
 
