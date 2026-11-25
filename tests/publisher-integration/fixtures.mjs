@@ -134,21 +134,50 @@ for (const [name, test] of [
 console.log('Publisher negative fixtures rejected as expected');
 
 const originalFetch = globalThis.fetch;
-const originalCommit = publisher.commitFileToBranch;
+const baseSha = fs.readFileSync(new URL('./website-ref.txt', import.meta.url), 'utf8').trim();
+const basePosts = fs.readFileSync(path.join(root, 'posts.json')).toString('base64');
+const branch = 'publish/test-only';
 try {
-  globalThis.fetch = async () => ({ ok: false, status: 404 });
-  let captured = null;
-  publisher.commitFileToBranch = async (file, content) => { captured = { file, posts: JSON.parse(content) }; };
+  let stagedTree;
+  globalThis.fetch = async (input, { method = 'GET', body } = {}) => {
+    const url = new URL(input);
+    const endpoint = url.pathname.slice(new URL(publisher.repoApi).pathname.length);
+    switch (`${method} ${endpoint}`) {
+      case 'GET /contents/posts.json':
+        assert.equal(url.searchParams.get('ref'), baseSha);
+        return Response.json({ content: basePosts });
+      case `GET /git/ref/heads/${branch}`:
+        return new Response(null, { status: 404 });
+      case `GET /git/commits/${baseSha}`:
+        return Response.json({ tree: { sha: 'base-tree' } });
+      case 'POST /git/trees':
+        stagedTree = JSON.parse(body).tree;
+        return Response.json({ sha: 'staged-tree' });
+      case 'POST /git/commits':
+        return Response.json({ sha: 'staged-commit' });
+      case 'GET /pulls':
+        return Response.json([]);
+      case 'POST /git/refs':
+        return Response.json({});
+      default:
+        throw new Error(`Unexpected mocked publisher request: ${method} ${endpoint}`);
+    }
+  };
   for (const fixture of fixtures) {
-    await publisher.updatePostsJsonOnBranch({
+    stagedTree = undefined;
+    const articlePath = '_posts/' + fixture.filename;
+    const posts = await publisher.buildPostsJson({
       title: fixture.title, slug: fixture.slug, date: fixture.filename.slice(0, 10),
       seoTitle: fixture.title + ' SEO',
       category: fixture.category, subcategory: fixture.subcategory, image: fixture.image,
       description: 'Fixture article to validate the Website publishing contract.',
-      path: '_posts/' + fixture.filename, tags: ['Integration', 'Test']
-    }, 'test-only', { github_pat: 'fake-test-token' });
-    if (captured?.file !== 'posts.json') throw new Error('Publisher did not write posts.json');
-    const post = captured.posts[0];
+      path: articlePath, tags: ['Integration', 'Test']
+    }, baseSha, {});
+    await publisher.stagePublishBranch(branch, articlePath, fs.readFileSync(path.join(root, articlePath), 'utf8'),
+      posts, baseSha, {});
+    const stagedIndex = stagedTree?.find(entry => entry.path === 'posts.json');
+    if (!stagedIndex) throw new Error('Publisher did not stage posts.json');
+    const post = JSON.parse(stagedIndex.content)[0];
     if (post.file !== fixture.filename || post.url !== '/_posts/' + fixture.filename ||
         post.category !== fixture.category || post.subcategory !== fixture.subcategory ||
         post.title !== fixture.title || post.seoTitle !== fixture.title + ' SEO') {
@@ -157,6 +186,5 @@ try {
   }
 } finally {
   globalThis.fetch = originalFetch;
-  publisher.commitFileToBranch = originalCommit;
 }
 console.log('Publisher posts.json writer shape verified without network or commits');
