@@ -4,6 +4,7 @@ import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-c
 import { notionClient, statusPatchBody, richTextPatchBody, numberPatchBody } from '../ops/notion.js';
 import { verifyRecordReceipt } from '../ops/receipts.js';
 import { hasReceiptKey, normalizePageId } from '../utils/ops-receipts.js';
+import { describeError } from '../utils/safe-error.js';
 
 const SEO_PASS_SCORE = 85;
 const ELIGIBLE_STATUSES = [S.draftGenerated, S.draftReview, S.draftApproval];
@@ -54,14 +55,27 @@ export class PublisherPoller {
     return { skipped: true, reason };
   }
 
+  async recordFailure(client, pageId, error) {
+    const message = `Publisher Poller: could not finish record: ${describeError(error)}`;
+    console.error(message);
+    if (!client || !normalizePageId(pageId)) return;
+    try {
+      await client.patch(pageId, richTextPatchBody(P.lastError, message));
+    } catch {
+      console.warn('Publisher Poller: could not write Last Error');
+    }
+  }
+
   async runSingle(pageId) {
     if (!this.configured()) return this.skip('unavailable');
     if (!normalizePageId(pageId)) return { skipped: true, reason: 'invalid_page' };
+    let client;
     try {
       const secrets = await this.getSecrets();
-      const client = notionClient(secrets.notion_token || this.env.NOTION_TOKEN);
+      client = notionClient(secrets.notion_token || this.env.NOTION_TOKEN);
       return await this.publishPage(await client.retrieve(pageId), client, new PublishingAgent(this.env), secrets);
-    } catch {
+    } catch (error) {
+      await this.recordFailure(client, pageId, error);
       throw new Error('Publisher could not finish record');
     }
   }
@@ -113,9 +127,9 @@ export class PublisherPoller {
             else if (result.awaitingMerge) results.awaitingMerge++;
             else if (result.errored) results.errors++;
             else results.skipped++;
-          } catch {
-            console.error('Publisher Poller: could not finish record');
+          } catch (error) {
             results.errors++;
+            await this.recordFailure(client, page.id, error);
           }
         }
         cursor = data.has_more ? data.next_cursor : null;

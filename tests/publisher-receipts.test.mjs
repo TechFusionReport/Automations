@@ -293,6 +293,54 @@ test('legacy direct publish route cannot bypass receipt enforcement with supplie
   assert.equal(f.gh.writes.length, 0);
 });
 
+test('batch polling logs and stores the same sanitized upstream error without changing Status', async t => {
+  const f = fixture(t);
+  await f.approve(1, 2);
+  const fixtureCredential = 'secret_publisher_fixture';
+  t.mock.method(PublishingAgent.prototype, 'fetchWebsiteTemplate', async () => {
+    throw new TypeError(`Template request failed using Bearer ${fixtureCredential}`);
+  });
+
+  assert.equal((await f.run()).errors, 1);
+  const [message] = f.logs.mock.calls[0].arguments;
+  assert.equal(message, 'Publisher Poller: could not finish record: TypeError: Template request failed using [redacted]');
+  assert.deepEqual(f.patches.at(-1), { [P.lastError]: { rich_text: [{ text: { content: message } }] } });
+  assert.equal(f.page.properties[P.status].status.name, S.draftReview);
+  assert.equal(f.gh.writes.length, 0);
+});
+
+test('failed Last Error writes leave the manual route response generic and batch polling alive', async t => {
+  const f = fixture(t);
+  await f.approve(1, 2);
+  const fixtureCredential = 'secret_publisher_fixture';
+  t.mock.method(PublishingAgent.prototype, 'fetchWebsiteTemplate', async () => {
+    throw new Error(`Template request failed: ${fixtureCredential}`);
+  });
+  const normalFetch = globalThis.fetch;
+  const fetch = t.mock.method(globalThis, 'fetch', async (input, options) => {
+    if (options?.method === 'PATCH' && new URL(input).hostname === 'api.notion.com'
+      && Object.hasOwn(JSON.parse(options.body).properties, P.lastError)) {
+      throw new Error(fixtureCredential);
+    }
+    return normalFetch(input, options);
+  });
+
+  const response = await worker.fetch(new Request('https://worker.example/admin/publish-single', {
+    method: 'POST',
+    headers: { 'X-Worker-Secret': f.env.WORKER_SHARED_SECRET },
+    body: JSON.stringify({ pageId: f.id }),
+  }), f.env, {});
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: 'Publisher could not finish record' });
+  assert.equal((await f.run()).errors, 1);
+  assert.equal(f.warnings.mock.callCount(), 2);
+  assert.ok(f.warnings.mock.calls.every(({ arguments: args }) => args[0] === 'Publisher Poller: could not write Last Error'));
+  const writeAttempts = fetch.mock.calls.filter(({ arguments: [, options] }) =>
+    options?.method === 'PATCH' && Object.hasOwn(JSON.parse(options.body).properties, P.lastError));
+  assert.equal(writeAttempts.length, 2);
+  assert.doesNotMatch(JSON.stringify(f.logs.mock.calls.map(({ arguments: args }) => args)), /secret_publisher_fixture/);
+});
+
 test('rerendering the article body preserves exactly one leading AI disclosure', () => {
   const agent = new PublishingAgent({});
   const metadata = { date: '2026-01-04', title: 'Sample', slug: 'sample', category: 'Technology' };
