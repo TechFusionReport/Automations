@@ -214,3 +214,29 @@ test('recent approvals endpoint reports both gates and active receipts', async t
   const after = await (await handleOps(new Request('https://worker.example/ops/api/approvals/recent'), env, {}, deps)).json();
   assert.equal(after.gates[0].items[0].receiptActive, false);
 });
+
+test('ops UI indexes only active approvals and lets this tab’s approvals win', async () => {
+  const { compactPageId, indexApprovals } = await import('../ops/ops.js');
+  const id = crypto.randomUUID();
+  const recent = { gates: [
+    { gate: 1, items: [
+      { pageId: compactPageId(id), approver, approvedAt: new Date(issuedAt).toISOString(), receiptActive: true },
+      { pageId: 'f'.repeat(32), approver, approvedAt: new Date(issuedAt).toISOString(), receiptActive: false },
+    ] },
+    { gate: 2, items: [] },
+  ] };
+  const index = indexApprovals(recent);
+  assert.equal(compactPageId(id.toUpperCase()), id.replaceAll('-', ''));
+  assert.equal(index[1].get(compactPageId(id)).approver, approver);
+  assert.equal(index[1].has('f'.repeat(32)), false);
+  const local = { 2: new Map([[compactPageId(id), { approver: 'tab@example.invalid' }]]) };
+  assert.equal(indexApprovals(recent, local)[2].get(compactPageId(id)).approver, 'tab@example.invalid');
+  assert.equal(indexApprovals({ error: 'down', gates: [] })[1].size, 0);
+});
+
+test('ops UI formats approval evidence with local time and approver', async () => {
+  const { approvalText } = await import('../ops/ops.js');
+  const evidence = { approvedAt: new Date(issuedAt).toISOString(), approver };
+  assert.equal(approvalText(evidence, date => date.toISOString()), `Approved ${evidence.approvedAt} by ${approver}`);
+  assert.equal(approvalText({ approvedAt: 'nope' }), 'Approved at an unknown time by unknown');
+});

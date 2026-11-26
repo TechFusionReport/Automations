@@ -152,6 +152,34 @@ function videoEmbed(url) {
     referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`;
 }
 
+/** Normalizes a Notion page id to the compact form approval evidence uses. */
+export function compactPageId(id) {
+  return String(id || '').replaceAll('-', '').toLowerCase();
+}
+
+/** Indexes approvals whose receipt is still active by gate and compact page id. */
+export function indexApprovals(recent, extra = {}) {
+  const index = { 1: new Map(), 2: new Map() };
+  for (const group of recent?.gates || []) {
+    if (!index[group.gate]) continue;
+    for (const item of group.items || []) {
+      if (item.receiptActive) index[group.gate].set(compactPageId(item.pageId), item);
+    }
+  }
+  // Approvals made in this tab win, since KV listings can lag a fresh write.
+  for (const gate of [1, 2]) {
+    for (const [id, evidence] of extra[gate] || []) index[gate].set(id, evidence);
+  }
+  return index;
+}
+
+/** Formats evidence as "Approved <local date/time> by <approver>". */
+export function approvalText(evidence, format = (date) => date.toLocaleString()) {
+  const date = new Date(evidence?.approvedAt);
+  const when = Number.isNaN(date.getTime()) ? 'at an unknown time' : format(date);
+  return `Approved ${when} by ${evidence?.approver || 'unknown'}`;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Everything below runs only in the browser.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -176,7 +204,12 @@ if (typeof document !== 'undefined') {
     selectedDraftIds: new Set(),
     draftQuery: { q: '', sort: 'oldest', featured: '' },
     dirtyDraft: false,
+    // Approval evidence from /approvals/recent, indexed by gate → compact page id.
+    recentApprovals: null,
+    approvals: { 1: new Map(), 2: new Map() },
+    localApprovals: { 1: new Map(), 2: new Map() },
   };
+  const APPROVAL_GATE = { 'approve-transcription': 1, 'approve-publish': 2 };
   /** Returns the first matching element within an optional root. */
   const $ = (sel, root = document) => root.querySelector(sel);
   /** Returns the root element for a named dashboard view. */
@@ -477,13 +510,53 @@ if (typeof document !== 'undefined') {
       </div>`;
   }
 
+  // ── approval evidence ──────────────────────────────────────────────────────
+  /** Loads recent approval evidence; a failure leaves Approve buttons enabled. */
+  async function loadApprovals() {
+    try {
+      state.recentApprovals = await api('/approvals/recent');
+    } catch (e) {
+      state.recentApprovals = { error: e.message, gates: [] };
+    }
+    state.approvals = indexApprovals(state.recentApprovals, state.localApprovals);
+  }
+
+  /** Builds an Approve button, greyed out with its evidence once approved. */
+  function approveButton(act, id, label) {
+    const evidence = state.approvals[APPROVAL_GATE[act]].get(compactPageId(id));
+    if (evidence) {
+      return `<button class="btn green" disabled aria-disabled="true">${escapeHtml(label)}</button>
+        <span class="approved-note">${escapeHtml(approvalText(evidence))}</span>`;
+    }
+    return `<button class="btn green" data-act="${act}" data-id="${escapeHtml(id)}">${escapeHtml(label)}</button>`;
+  }
+
+  /** Builds the "Recently approved" list for one gate (last 14 days, newest first). */
+  function recentApprovedSection(gate, label) {
+    const recent = state.recentApprovals;
+    if (!recent) return '';
+    const group = (recent.gates || []).find((g) => g.gate === gate);
+    const items = group?.items || [];
+    const body = recent.error
+      ? errorState(`Approval history unavailable: ${recent.error}`)
+      : items.length
+        ? items.map((it) => `<div class="recent-row">
+            <span class="row-title">${externalLink(it.notionUrl, it.title || 'Untitled')}</span>
+            <span class="row-sub muted">Gate ${gate} · ${escapeHtml(approvalText(it))}${it.receiptActive ? '' : ' · receipt revoked'}</span>
+            <button class="btn green" disabled aria-disabled="true">${escapeHtml(label)}</button>
+          </div>`).join('')
+        : empty(`Nothing approved at Gate ${gate} in the last ${recent.windowDays || 14} days.`);
+    const skipped = group?.skipped ? `<div class="muted small">${group.skipped} approved item(s) could not be loaded from Notion.</div>` : '';
+    return `<section class="recent-approvals"><h2>Recently approved</h2>${body}${skipped}</section>`;
+  }
+
   // ── review queue (Gate 1) ───────────────────────────────────────────────────
   /** Loads the transcription approval queue from Notion through the Worker. */
   async function loadQueue() {
     const root = view('queue');
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading queue…')}</div><div class="detail-pane"></div></div>`;
     try {
-      const data = await api('/queue');
+      const [data] = await Promise.all([api('/queue'), loadApprovals()]);
       state.queue = data.items;
       renderQueue();
     } catch (e) {
@@ -496,12 +569,13 @@ if (typeof document !== 'undefined') {
   function renderQueue() {
     const root = view('queue');
     const listPane = $('.list-pane', root);
-    if (!state.queue.length) { listPane.innerHTML = empty('Queue clear — nothing pending review.'); $('.detail-pane', root).innerHTML = ''; return; }
+    const recent = recentApprovedSection(1, 'Approve for Transcription');
+    if (!state.queue.length) { listPane.innerHTML = empty('Queue clear — nothing pending review.') + recent; $('.detail-pane', root).innerHTML = ''; return; }
     listPane.innerHTML = state.queue.map((it, i) => `
       <button class="row ${i === state.selectedQueue ? 'sel' : ''}" data-i="${i}">
         <span class="row-title">${escapeHtml(it.title || 'Untitled')}</span>
         <span class="row-sub muted">${escapeHtml(it.category || '')}${it.subcategory ? ' · ' + escapeHtml(it.subcategory) : ''}</span>
-      </button>`).join('');
+      </button>`).join('') + recent;
     if (state.selectedQueue == null) state.selectedQueue = 0;
     renderQueueDetail();
   }
@@ -523,7 +597,7 @@ if (typeof document !== 'undefined') {
         <dt>Video</dt><dd>${it.videoUrl ? externalLink(it.videoUrl, 'Open video ↗') : '—'}</dd>
       </dl>
       <div class="actions">
-        <button class="btn green" data-act="approve-transcription" data-id="${escapeHtml(it.id)}">Approve for Transcription</button>
+        ${approveButton('approve-transcription', it.id, 'Approve for Transcription')}
         <button class="btn red" data-act="reject" data-id="${escapeHtml(it.id)}">Reject</button>
         ${externalLink(it.notionUrl, 'Open in Notion ↗', 'btn ghost')}
       </div>
@@ -548,7 +622,7 @@ if (typeof document !== 'undefined') {
     state.dirtyDraft = false;
     root.innerHTML = `<div class="split"><div class="list-pane">${loading('Loading drafts…')}</div><div class="detail-pane"></div></div>`;
     try {
-      const data = await api('/drafts' + draftParams());
+      const [data] = await Promise.all([api('/drafts' + draftParams()), loadApprovals()]);
       state.drafts = data.items;
       state.draftsCursor = data.nextCursor || null;
       state.draftsHasMore = data.hasMore === true;
@@ -578,7 +652,8 @@ if (typeof document !== 'undefined') {
       <select id="draft-featured"><option value="">All</option><option value="true">Featured</option><option value="false">Not featured</option></select>
       <button class="btn ghost" data-filter-drafts>Apply</button>
     </div>`;
-    if (!state.drafts.length) { listPane.innerHTML = tools + empty('No matching drafts awaiting review.'); $('.detail-pane', root).innerHTML = ''; return; }
+    const recent = recentApprovedSection(2, 'Approve Publishing');
+    if (!state.drafts.length) { listPane.innerHTML = tools + empty('No matching drafts awaiting review.') + recent; $('.detail-pane', root).innerHTML = ''; return; }
     const rows = state.drafts.map((it, i) => `<div class="row-wrap">
       <input type="checkbox" data-select-draft="${escapeHtml(it.id)}" ${state.selectedDraftIds.has(it.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(it.title)}">
       <button class="row ${i === state.selectedDraft ? 'sel' : ''}" data-i="${i}">
@@ -588,7 +663,7 @@ if (typeof document !== 'undefined') {
     const total = state.overview?.kpis?.gate2Backlog;
     const progress = total == null ? `${state.drafts.length} loaded` : `${state.drafts.length} of ${total} total loaded`;
     const more = state.draftsHasMore ? `<button class="btn ghost" data-load-more="drafts">Load 50 More</button>` : '';
-    listPane.innerHTML = tools + rows + `<div class="actions bulk"><select id="bulk-action"><option value="feature">Feature</option><option value="unfeature">Unfeature</option><option value="revision">Return for revision</option><option value="reject">Reject</option></select><button class="btn ghost" data-bulk-apply>Apply to selected</button>${more}<span class="muted mono">${progress}</span></div>`;
+    listPane.innerHTML = tools + rows + recent + `<div class="actions bulk"><select id="bulk-action"><option value="feature">Feature</option><option value="unfeature">Unfeature</option><option value="revision">Return for revision</option><option value="reject">Reject</option></select><button class="btn ghost" data-bulk-apply>Apply to selected</button>${more}<span class="muted mono">${progress}</span></div>`;
     $('#draft-sort').value = state.draftQuery.sort;
     $('#draft-featured').value = state.draftQuery.featured;
     renderDraftDetail();
@@ -640,7 +715,7 @@ if (typeof document !== 'undefined') {
       <button class="btn amber" data-act="return-revision" data-id="${detail.id}">Return for Revision</button>
       <button class="btn red" data-act="reject" data-id="${detail.id}">Reject</button>
       <button class="btn ${detail.featured ? 'amber' : 'purple'}" data-act="toggle-featured" data-id="${detail.id}" data-val="${!detail.featured}">${detail.featured ? 'Unfeature' : 'Feature'}</button>
-      <button class="btn green" data-act="approve-publish" data-id="${detail.id}">Approve Publishing</button></div><div class="act-msg"></div>`;
+      ${approveButton('approve-publish', detail.id, 'Approve Publishing')}</div><div class="act-msg"></div>`;
   }
 
   // ── board ──────────────────────────────────────────────────────────────────
@@ -693,21 +768,35 @@ if (typeof document !== 'undefined') {
   /** Validates and submits a single governed review action. */
 
   async function runAction(btn) {
+    // Disable on the click itself so a double click can't send a second request.
+    if (btn.disabled) return;
+    btn.disabled = true;
     const act = btn.dataset.act, pageId = btn.dataset.id;
+    const gate = APPROVAL_GATE[act];
+    const msg = btn.closest('.detail-pane')?.querySelector('.act-msg');
+    if (msg) msg.innerHTML = '';
+    const cancel = () => { btn.disabled = false; };
     const destructive = ['reject', 'return-revision', 'approve-publish', 'generate-comparison'];
-    if (destructive.includes(act) && !confirm(`${act.replaceAll('-', ' ')} for this record?`)) return;
+    if (destructive.includes(act) && !confirm(`${act.replaceAll('-', ' ')} for this record?`)) return cancel();
     const body = { pageId };
     const editor = $('#draft-editor'), notes = $('#reviewer-notes');
     if (act === 'toggle-featured') body.value = btn.dataset.val === 'true';
     if (['save-draft', 'return-revision', 'reject', 'approve-publish'].includes(act)) {
       body.blogDraft = editor?.value; body.reviewerNotes = notes?.value;
       if (act === 'return-revision' || act === 'reject') body.note = prompt('Reason / requested change (required):') || '';
-      if ((act === 'return-revision' || act === 'reject') && !body.note) return;
+      if ((act === 'return-revision' || act === 'reject') && !body.note) return cancel();
     }
-    btn.disabled = true;
     try {
       const result = await api(`/actions/${act}`, { method: 'POST', body: JSON.stringify(body) });
-      state.dirtyDraft = false; toast(result.message || 'Saved successfully');
+      if (gate && result.evidence) {
+        // Keep the button greyed even if the recent-approvals listing lags the write.
+        state.localApprovals[gate].set(compactPageId(pageId), result.evidence);
+        state.approvals[gate].set(compactPageId(pageId), result.evidence);
+      }
+      const message = result.alreadyApproved && result.evidence
+        ? `Already approved — ${approvalText(result.evidence)}`
+        : result.message || 'Saved successfully';
+      state.dirtyDraft = false; toast(message);
       if (act === 'generate-comparison') {
         const d = state.draftDetails[pageId]; d.keyPointComparison = result.comparison; d.comparisonGeneratedAt = result.generatedAt; renderDraftDetail();
       } else if (act === 'save-draft') {
@@ -719,7 +808,11 @@ if (typeof document !== 'undefined') {
         else if (view('errors').classList.contains('active')) await loadErrors();
         else await loadDashboard();
       }
-    } catch (e) { btn.disabled = false; toast(e.message, true); }
+    } catch (e) {
+      // Re-enable only on error, with the error shown next to the button.
+      btn.disabled = false; toast(e.message, true);
+      if (msg) msg.innerHTML = errorState(e.message);
+    }
   }
 
   /** Validates and submits a guarded non-publishing bulk action. */
