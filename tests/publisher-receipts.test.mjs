@@ -22,6 +22,10 @@ const baseSha = 'c'.repeat(40);
 const ok = (data = {}) => Response.json(data);
 const error = code => new Response(null, { status: code });
 
+const reviewedDraft = (opening = 'Human-reviewed text') =>
+  `${opening}\n\nSample context.\n\n## First section\n\n${'Useful detail. '.repeat(300)}\n\n## Second section\n\nMore details.`;
+const seoCopy = length => `Sample ${'x'.repeat(length - 7)}`;
+
 function fixture(t, target = {}) {
   t.mock.timers.enable({ apis: ['Date'], now });
   const id = crypto.randomUUID();
@@ -43,14 +47,15 @@ function fixture(t, target = {}) {
     [P.status]: status(S.draftReview),
     [P.publishToGithub]: { checkbox: true },
     [P.publishedToGithub]: { checkbox: false },
-    [P.blogDraft]: rich('Human-reviewed text'),
-    [P.seoTitle]: rich('Sample article'),
+    [P.blogDraft]: rich(reviewedDraft()),
+    [P.seoTitle]: rich(seoCopy(55)),
     [P.seoSlug]: rich('sample'),
-    [P.seoMeta]: rich('Sample description'),
+    [P.seoMeta]: rich(seoCopy(150)),
     [P.focusKeyword]: rich('sample'),
     [P.schemaType]: { select: { name: 'Article' } },
     [P.category]: { select: { name: 'Technology' } },
-    [P.seoScore]: { number: 85 },
+    [P.imageAltText]: rich('Sample image'),
+    [P.internalLinks]: rich('/guides/topic-a /guides/topic-b'),
   } };
   const gh = { pr: null, ref: null, merge: true, writes: [], trees: [], commits: 0, posts: [], files: [] };
   const queries = [];
@@ -197,6 +202,8 @@ for (const target of [{}, {
     const f = fixture(t, target);
     await f.approve(1, 2);
     assert.equal((await f.run()).processed, 1);
+    assert.equal(f.page.properties[P.seoScore].number, 100);
+    assert.deepEqual(f.patches[0], { [P.seoScore]: { number: 100 } });
     assert.equal(f.page.properties[P.publishedToGithub].checkbox, true);
     assert.equal(f.page.properties[P.status].status.name, S.publishedToGithub);
     assert.ok(f.page.properties[P.publishedUrl].url.startsWith(`https://github.com/${f.repo}/blob/${f.branch}/`));
@@ -214,15 +221,20 @@ test('already-Published and SEO-blocked records cannot publish', async t => {
   f.page.properties[P.status] = status(S.publishedToGithub);
   assert.equal((await f.run()).skipped, 1);
   f.page.properties[P.status] = status(S.draftReview);
-  f.page.properties[P.seoScore] = { number: 84 };
+  f.page.properties[P.seoTitle] = rich(seoCopy(45));
+  f.page.properties[P.seoMeta] = rich(seoCopy(126));
+  delete f.page.properties[P.imageAltText];
+  delete f.page.properties[P.internalLinks];
+  await f.approve(2);
   assert.equal((await f.run()).blocked, 1);
+  assert.equal(f.page.properties[P.seoScore].number, 84);
   assert.equal(f.gh.writes.length, 0);
 });
 
 test('editing during staging prevents PR creation, and a new approval reuses the branch', async t => {
   const f = fixture(t);
   await f.approve(1, 2);
-  f.onStaged(() => { f.page.properties[P.blogDraft] = rich('Changed during branch staging'); });
+  f.onStaged(() => { f.page.properties[P.blogDraft] = rich(reviewedDraft('Changed during branch staging')); });
   assert.equal((await f.run()).skipped, 1);
   assert.equal(f.gh.pr, null);
   f.onStaged(null);
@@ -263,7 +275,7 @@ test('open PR gets one authenticated merge retry per run and is never duplicated
   f.page.properties[P.blogDraft] = rich('Changed while PR is open');
   assert.equal((await f.run()).awaitingMerge, 1);
   assert.equal(f.gh.writes.filter(call => call.endpoint === '/pulls/1/merge').length, 2);
-  f.page.properties[P.blogDraft] = rich('Human-reviewed text');
+  f.page.properties[P.blogDraft] = rich(reviewedDraft());
   f.gh.merge = true;
   assert.equal((await f.run()).processed, 1);
   assert.equal(f.gh.writes.filter(call => call.endpoint === '/pulls').length, 1);
@@ -348,7 +360,7 @@ const affiliateDraft = 'The github repository covers hosting and notes.';
 
 async function renderAffiliateDraft(t, draft, flag) {
   const f = fixture(t, flag === undefined ? {} : { AFFILIATE_LINKS_ENABLED: flag });
-  f.page.properties[P.blogDraft] = rich(draft);
+  f.page.properties[P.blogDraft] = rich(reviewedDraft(draft));
   await f.approve(1, 2);
   assert.equal((await f.run()).processed, 1);
   return f.gh.trees[0][0].content;
@@ -379,4 +391,25 @@ test('disabled affiliate placeholders become plain text and hand-written links s
     'Use [AFFILIATE: Notion] or [affiliate:  vercel ]. See [the repository](https://example.invalid/docs?source=editor).');
   assert.ok(html.includes('<p>Use Notion or vercel. See <a href="https://example.invalid/docs?source=editor" rel="noopener noreferrer">the repository</a>.</p>'));
   assert.doesNotMatch(html, /affiliate:|\?ref=techfusion/i);
+});
+
+
+test('missing SEO fields block publishing even when the remaining score reaches 85', async t => {
+  const f = fixture(t);
+  delete f.page.properties[P.schemaType];
+  await f.approve(1, 2);
+  assert.equal((await f.run()).blocked, 1);
+  assert.equal(f.page.properties[P.seoScore].number, 95);
+  assert.match(f.page.properties[P.lastError].rich_text[0].text.content, /missing schema type/);
+  assert.equal(f.gh.writes.length, 0);
+});
+
+test('a hand-set score of 100 cannot authorize a poor draft', async t => {
+  const f = fixture(t);
+  f.page.properties[P.blogDraft] = rich('A thin draft.');
+  f.page.properties[P.seoScore] = { number: 100 };
+  await f.approve(1, 2);
+  assert.equal((await f.run()).blocked, 1);
+  assert.equal(f.page.properties[P.seoScore].number, 75);
+  assert.equal(f.gh.writes.length, 0);
 });

@@ -16,7 +16,8 @@ import { generateKeyPointComparison } from './key-point-comparison.js';
 import { buildCommandCenter } from './command-center.js';
 import { buildObservability } from './observability.js';
 import { buildLegacyMonitoring } from './legacy-monitoring.js';
-import { readSignedReceipt, recordContentHash } from './receipts.js';
+import { readPublishPayload, readSignedReceipt, recordContentHash } from './receipts.js';
+import { computeSeoScore, readSeoFields } from '../utils/seo-score.js';
 import { hasReceiptKey, normalizePageId, receiptKey, signReceipt } from '../utils/ops-receipts.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
@@ -591,7 +592,12 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         if (normalizePageId(page?.id) !== normalizePageId(pageId)) {
           return json({ error: 'Receipt service unavailable' }, 502);
         }
-        const contentHash = await recordContentHash(client, page);
+        const payload = gate === 2 ? await readPublishPayload(client, page) : undefined;
+        if (payload) {
+          const { score } = computeSeoScore(readSeoFields(page.properties || {}, payload.content));
+          await client.patch(pageId, numberPatchBody(P.seoScore, score));
+        }
+        const contentHash = await recordContentHash(client, page, payload);
         const issuedAt = now();
         const receipt = await signReceipt(env.OPS_RECEIPT_KEY, {
           pageId, gate, approver: auth.email, contentHash, issuedAt,
