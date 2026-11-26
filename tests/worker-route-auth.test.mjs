@@ -105,15 +105,16 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
     },
   };
   const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
-  async function signedHeaders(audience) {
+  async function signedHeaders(audience, claims = { email: 'test@example.invalid' }, corruptSignature = false) {
     const header = encode({ alg: 'RS256', kid: jwk.kid });
     const payload = encode({
       aud: [audience],
       exp: Math.floor(Date.now() / 1000) + 60,
-      email: 'test@example.invalid',
+      ...claims,
     });
     const input = `${header}.${payload}`;
-    const signature = await crypto.subtle.sign(algorithm, privateKey, Buffer.from(input));
+    const signature = new Uint8Array(await crypto.subtle.sign(algorithm, privateKey, Buffer.from(input)));
+    if (corruptSignature) signature[0] ^= 1;
     return { 'Cf-Access-Jwt-Assertion': `${input}.${Buffer.from(signature).toString('base64url')}` };
   }
 
@@ -208,6 +209,58 @@ test('signed Access JWTs work for both Worker routes and ops', async t => {
   assert.deepEqual(await apiWithAssets.json(), { environment: 'PREVIEW', siteUrl: 'https://preview.example/' });
   assert.equal((await request('/ops/api/config', {}, preview)).status, 403);
   assert.equal(assetCalls.length, before);
+
+  await t.test('receipt verification alone accepts the configured service identity', async () => {
+    const clientId = 'test-service-identity';
+    const serviceAudience = 'receipt-app-test';
+    const receiptBindings = {
+      ...bindings,
+      ACCESS_AUD: `${env.ACCESS_AUD}, ${serviceAudience}`,
+      RECEIPT_VERIFIER_CLIENT_ID: clientId,
+      OPS_RECEIPT_KEY: undefined,
+    };
+    const body = { pageId: crypto.randomUUID(), gate: 1 };
+    const postReceipt = (headers, configured = receiptBindings) =>
+      request('/receipts/verify', { method: 'POST', body, headers }, configured);
+
+    const serviceHeaders = await signedHeaders(serviceAudience, { common_name: `${clientId}.access` });
+    for (const [claim, configured] of [
+      [`${clientId}.access`, clientId],
+      [clientId, clientId],
+      [clientId, `${clientId}.access`],
+    ]) {
+      const response = await postReceipt(await signedHeaders(serviceAudience, { common_name: claim }), {
+        ...receiptBindings, RECEIPT_VERIFIER_CLIENT_ID: configured,
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { valid: false, reason: 'unavailable' });
+    }
+
+    for (const rejected of [
+      await signedHeaders(serviceAudience, { common_name: 'other-service-identity' }),
+      await signedHeaders(serviceAudience, { common_name: clientId, exp: Math.floor(Date.now() / 1000) - 60 }),
+      await signedHeaders('wrong-receipt-audience', { common_name: clientId }),
+      await signedHeaders(serviceAudience, { common_name: clientId }, true),
+      await signedHeaders(serviceAudience, {}),
+    ]) {
+      const response = await postReceipt(rejected);
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), { error: 'Unauthorized' });
+    }
+    for (const unset of [undefined, '', '   ']) {
+      assert.equal((await postReceipt(serviceHeaders, { ...receiptBindings, RECEIPT_VERIFIER_CLIENT_ID: unset })).status, 401);
+    }
+
+    assert.equal((await request('/receipts/verify', { headers: serviceHeaders }, receiptBindings)).status, 401);
+    for (const path of ['/discover', '/publish', '/cache/clear', '/admin/publish-poll', '/receipts/verify/']) {
+      assert.equal((await request(path, { method: 'POST', headers: serviceHeaders }, receiptBindings)).status, 401);
+    }
+    const ops = await request('/ops/api/config', { headers: serviceHeaders }, receiptBindings);
+    assert.equal(ops.status, 403);
+    assert.deepEqual(await ops.json(), { error: 'no email in token' });
+    assert.equal((await postReceipt(headers)).status, 200);
+    assert.equal((await postReceipt(secretHeader)).status, 200);
+  });
 
   t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [] }));
   assert.equal((await request('/ops/api/queue', { headers }, bindings)).status, 200);
