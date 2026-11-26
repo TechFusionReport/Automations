@@ -80,9 +80,12 @@ test('approval signs the snapshot and preserves the checkbox and receipt audit',
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: true, reason: 'valid' });
 
   page.properties[P.blogDraft] = rich('The reviewed draft');
+  page.properties[P.seoScore] = { number: 100 };
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: false, reason: 'content_changed' });
   assert.equal((await action('approve-publish', { note: 'Reviewed' })).status, 200);
   const gate2 = JSON.parse(entries.get(receiptKey(pageId, 2)));
+  assert.deepEqual(client.patch.mock.calls[1].arguments[1], { [P.seoScore]: { number: 0 } });
+  assert.equal(page.properties[P.seoScore].number, 0);
   assert.equal(page.properties[P.publishToGithub].checkbox, true);
   assert.equal(page.properties[P.status], undefined);
   const audit = page.properties[P.reviewAuditLog].rich_text.map(chunk => chunk.text.content).join('');

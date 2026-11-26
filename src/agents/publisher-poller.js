@@ -1,6 +1,7 @@
+import { computeSeoScore, readSeoFields } from '../utils/seo-score.js';
 import { PublishingAgent } from './publishing.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
-import { notionClient, statusPatchBody, richTextPatchBody } from '../ops/notion.js';
+import { notionClient, statusPatchBody, richTextPatchBody, numberPatchBody } from '../ops/notion.js';
 import { verifyRecordReceipt } from '../ops/receipts.js';
 import { hasReceiptKey, normalizePageId } from '../utils/ops-receipts.js';
 
@@ -25,17 +26,14 @@ export class PublisherPoller {
     return hasReceiptKey(this.env.OPS_RECEIPT_KEY) && typeof this.env.AGENT_STATE?.get === 'function';
   }
 
-  readRichText(property) {
-    return property?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
-  }
-
-  seoGate(props) {
-    const score = Number(props[P.seoScore]?.number || 0);
-    const seoTitle = this.readRichText(props[P.seoTitle]);
-    const seoSlug = this.readRichText(props[P.seoSlug]);
-    const seoMeta = this.readRichText(props[P.seoMeta]);
-    const focusKeyword = this.readRichText(props[P.focusKeyword]);
-    const schemaType = props[P.schemaType]?.select?.name || '';
+  async seoGate(client, page, body) {
+    const props = page.properties || {};
+    const fields = readSeoFields(props, body);
+    const { seoTitle, seoSlug, seoMeta, focusKeyword, schemaType } = fields;
+    const { score } = computeSeoScore(fields);
+    if (props[P.seoScore]?.number !== score) {
+      await client.patch(page.id, numberPatchBody(P.seoScore, score));
+    }
 
     const missing = [];
     if (!seoTitle) missing.push('SEO title');
@@ -149,7 +147,7 @@ export class PublisherPoller {
 
     const guard = async (expectedHash, allowPending) => {
       const live = await verify(expectedHash, allowPending);
-      if (live.valid && !this.seoGate(live.page.properties).passed) return { valid: false, reason: 'seo_gate' };
+      if (live.valid && !(await this.seoGate(client, live.page, live.payload.content)).passed) return { valid: false, reason: 'seo_gate' };
       return live;
     };
 
@@ -161,7 +159,7 @@ export class PublisherPoller {
     const proof = await verify();
     if (!proof.valid) return this.skip(proof.reason);
 
-    const gate = this.seoGate(proof.page.properties);
+    const gate = await this.seoGate(client, proof.page, proof.payload.content);
     if (!gate.passed) {
       const reason = `Publishing blocked by SEO gate: score ${gate.score}/${SEO_PASS_SCORE}`
         + (gate.missing.length ? `; missing ${gate.missing.join(', ')}` : '');

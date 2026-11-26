@@ -4,7 +4,7 @@ import {
 } from '../utils/ops-receipts.js';
 import { notionClient } from './notion.js';
 
-async function readPublishPayload(client, page) {
+export async function readPublishPayload(client, page) {
   const props = page.properties || {};
   const richText = name => props[name]?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
   // Publish from the same block-first snapshot that receipts authorize.
