@@ -100,10 +100,17 @@ test('second approve returns the existing evidence without re-signing or re-tick
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: true, reason: 'valid' });
 
   // Gate 2 behaves the same once gate 1 is in place.
-  assert.equal((await action('approve-publish')).body.alreadyApproved, false);
+  const publishApproval = await action('approve-publish');
+  assert.equal(publishApproval.body.alreadyApproved, false);
+  assert.equal(client.patch.mock.callCount(), 3);
+  assert.deepEqual(client.patch.mock.calls[1].arguments[1], { [P.seoScore]: { number: 0 } });
+  assert.equal(client.patch.mock.calls[2].arguments[1][P.publishToGithub].checkbox, true);
+  assert.equal(sign.mock.callCount(), 1);
   const again = await action('approve-publish');
   assert.equal(again.body.alreadyApproved, true);
-  assert.equal(client.patch.mock.callCount(), 2);
+  assert.deepEqual(again.body.evidence, publishApproval.body.evidence);
+  assert.equal(client.patch.mock.callCount(), 3);
+  assert.equal(sign.mock.callCount(), 1);
 });
 
 test('a failed record can be re-authorized even though its receipt is still valid', async t => {
