@@ -19,6 +19,10 @@ import { buildLegacyMonitoring } from './legacy-monitoring.js';
 import { readPublishPayload, readSignedReceipt, recordContentHash } from './receipts.js';
 import { computeSeoScore, readSeoFields } from '../utils/seo-score.js';
 import { hasReceiptKey, normalizePageId, receiptKey, signReceipt } from '../utils/ops-receipts.js';
+import {
+  buildEvidence, evidenceFromReceipt, isReauthorization, listRecentApprovals, readEvidence, writeEvidence,
+  RECENT_LIMIT, RECENT_WINDOW_DAYS,
+} from './approval-evidence.js';
 
 const DEFAULT_DB = '1fbbd080-de92-8043-89aa-dc02853c15c7';
 const SORT_CREATED_ASC = [{ timestamp: 'created_time', direction: 'ascending' }];
@@ -486,6 +490,17 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         case '/board': return json(await listBoard(env, dbId, client, ctx, now));
         case '/errors': return json(await listErrors(client, dbId));
         case '/archive': return json(await listArchive(client, dbId, url.searchParams.get('cursor')));
+        case '/approvals/recent': {
+          if (!env.AGENT_STATE?.list) return json({ error: 'Approval evidence unavailable' }, 503);
+          const gates = [];
+          for (const gate of [1, 2]) gates.push(await listRecentApprovals(env, client, gate, { now }));
+          return json({
+            generatedAt: new Date(now()).toISOString(),
+            windowDays: RECENT_WINDOW_DAYS,
+            limit: RECENT_LIMIT,
+            gates,
+          });
+        }
         default: return json({ error: 'not found' }, 404);
       }
     }
@@ -592,6 +607,14 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         if (normalizePageId(page?.id) !== normalizePageId(pageId)) {
           return json({ error: 'Receipt service unavailable' }, 502);
         }
+        // Idempotent approve: a valid receipt for this gate means the click already
+        // landed, so return its evidence without re-signing or re-ticking. A record
+        // in the gate's failure status is a deliberate re-authorization and proceeds.
+        const existing = await readSignedReceipt(env, pageId, gate);
+        if (existing && !isReauthorization(gate, mapDraftDetail(page).status)) {
+          const evidence = await readEvidence(env, gate, pageId) || evidenceFromReceipt(existing);
+          return json({ ok: true, pageId, alreadyApproved: true, evidence, message: 'Already approved' });
+        }
         const payload = gate === 2 ? await readPublishPayload(client, page) : undefined;
         if (payload) {
           const { score } = computeSeoScore(readSeoFields(page.properties || {}, payload.content));
@@ -606,6 +629,9 @@ export async function handleOps(request, env, ctx = {}, deps = {}) {
         const properties = withAudit(mapDraftDetail(page), actor, auditAction, changes, body.note, issuedAt);
         await client.patch(pageId, properties);
         await env.AGENT_STATE.put(receiptKey(pageId, gate), JSON.stringify(receipt));
+        const evidence = buildEvidence({ gate, pageId, approver: auth.email, approvedAt: issuedAt });
+        await writeEvidence(env, evidence, { warn: deps.warn });
+        return json({ ok: true, pageId, alreadyApproved: false, evidence, message: 'Review decision saved' });
       } else {
         const audited = await auditedProperties(client, pageId, actor, action, changes, body.note);
         if (REVOKES_PUBLISH.has(sub)) await revokeReceipts(env, pageId, sub === '/actions/reject');
