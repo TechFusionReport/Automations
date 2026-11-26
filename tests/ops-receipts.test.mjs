@@ -80,9 +80,12 @@ test('approval signs the snapshot and preserves the checkbox and receipt audit',
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: true, reason: 'valid' });
 
   page.properties[P.blogDraft] = rich('The reviewed draft');
+  page.properties[P.seoScore] = { number: 100 };
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: false, reason: 'content_changed' });
   assert.equal((await action('approve-publish', { note: 'Reviewed' })).status, 200);
   const gate2 = JSON.parse(entries.get(receiptKey(pageId, 2)));
+  assert.deepEqual(client.patch.mock.calls[1].arguments[1], { [P.seoScore]: { number: 0 } });
+  assert.equal(page.properties[P.seoScore].number, 0);
   assert.equal(page.properties[P.publishToGithub].checkbox, true);
   assert.equal(page.properties[P.status], undefined);
   const audit = page.properties[P.reviewAuditLog].rich_text.map(chunk => chunk.text.content).join('');
@@ -142,7 +145,8 @@ test('checkbox-only records and missing keys fail closed', async t => {
   delete env.OPS_RECEIPT_KEY;
   assert.equal((await action('approve-transcription')).status, 503);
   assert.equal((await action('approve-publish')).status, 503);
-  assert.equal(entries.size, 1);
+  // Only the first approval's receipt exists (its approval-evidence key is separate).
+  assert.equal([...entries.keys()].filter(key => key.startsWith('ops:receipt:')).length, 1);
   assert.deepEqual(await verifyRecordReceipt(env, client, pageId, 1), { valid: false, reason: 'unavailable' });
 });
 
@@ -175,6 +179,8 @@ test('verification route uses Worker auth and redacts private data on success an
   const failureText = await (await post(auth)).text();
   assert.deepEqual(JSON.parse(failureText), { valid: false, reason: 'unavailable' });
   client.patch.mock.mockImplementation(async () => { throw internalError; });
+  // Approvals are idempotent, so clear gate 2 to reach the failing patch again.
+  entries.delete(receiptKey(pageId, 2));
   const approvalFailure = await action('approve-publish');
   assert.equal(approvalFailure.status, 502);
   const outputs = [approvalText, responseText, failureText, await approvalFailure.text(),

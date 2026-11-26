@@ -1,8 +1,10 @@
+import { computeSeoScore, readSeoFields } from '../utils/seo-score.js';
 import { PublishingAgent } from './publishing.js';
 import { CATALOG_PROPERTIES as P, CATALOG_STATUS as S } from '../utils/content-catalog.js';
-import { notionClient, statusPatchBody, richTextPatchBody } from '../ops/notion.js';
+import { notionClient, statusPatchBody, richTextPatchBody, numberPatchBody } from '../ops/notion.js';
 import { verifyRecordReceipt } from '../ops/receipts.js';
 import { hasReceiptKey, normalizePageId } from '../utils/ops-receipts.js';
+import { describeError } from '../utils/safe-error.js';
 
 const SEO_PASS_SCORE = 85;
 const ELIGIBLE_STATUSES = [S.draftGenerated, S.draftReview, S.draftApproval];
@@ -25,17 +27,14 @@ export class PublisherPoller {
     return hasReceiptKey(this.env.OPS_RECEIPT_KEY) && typeof this.env.AGENT_STATE?.get === 'function';
   }
 
-  readRichText(property) {
-    return property?.rich_text?.map(r => r.plain_text || r.text?.content || '').join('').trim() || '';
-  }
-
-  seoGate(props) {
-    const score = Number(props[P.seoScore]?.number || 0);
-    const seoTitle = this.readRichText(props[P.seoTitle]);
-    const seoSlug = this.readRichText(props[P.seoSlug]);
-    const seoMeta = this.readRichText(props[P.seoMeta]);
-    const focusKeyword = this.readRichText(props[P.focusKeyword]);
-    const schemaType = props[P.schemaType]?.select?.name || '';
+  async seoGate(client, page, body) {
+    const props = page.properties || {};
+    const fields = readSeoFields(props, body);
+    const { seoTitle, seoSlug, seoMeta, focusKeyword, schemaType } = fields;
+    const { score } = computeSeoScore(fields);
+    if (props[P.seoScore]?.number !== score) {
+      await client.patch(page.id, numberPatchBody(P.seoScore, score));
+    }
 
     const missing = [];
     if (!seoTitle) missing.push('SEO title');
@@ -56,14 +55,27 @@ export class PublisherPoller {
     return { skipped: true, reason };
   }
 
+  async recordFailure(client, pageId, error) {
+    const message = `Publisher Poller: could not finish record: ${describeError(error)}`;
+    console.error(message);
+    if (!client || !normalizePageId(pageId)) return;
+    try {
+      await client.patch(pageId, richTextPatchBody(P.lastError, message));
+    } catch {
+      console.warn('Publisher Poller: could not write Last Error');
+    }
+  }
+
   async runSingle(pageId) {
     if (!this.configured()) return this.skip('unavailable');
     if (!normalizePageId(pageId)) return { skipped: true, reason: 'invalid_page' };
+    let client;
     try {
       const secrets = await this.getSecrets();
-      const client = notionClient(secrets.notion_token || this.env.NOTION_TOKEN);
+      client = notionClient(secrets.notion_token || this.env.NOTION_TOKEN);
       return await this.publishPage(await client.retrieve(pageId), client, new PublishingAgent(this.env), secrets);
-    } catch {
+    } catch (error) {
+      await this.recordFailure(client, pageId, error);
       throw new Error('Publisher could not finish record');
     }
   }
@@ -115,9 +127,9 @@ export class PublisherPoller {
             else if (result.awaitingMerge) results.awaitingMerge++;
             else if (result.errored) results.errors++;
             else results.skipped++;
-          } catch {
-            console.error('Publisher Poller: could not finish record');
+          } catch (error) {
             results.errors++;
+            await this.recordFailure(client, page.id, error);
           }
         }
         cursor = data.has_more ? data.next_cursor : null;
@@ -149,7 +161,7 @@ export class PublisherPoller {
 
     const guard = async (expectedHash, allowPending) => {
       const live = await verify(expectedHash, allowPending);
-      if (live.valid && !this.seoGate(live.page.properties).passed) return { valid: false, reason: 'seo_gate' };
+      if (live.valid && !(await this.seoGate(client, live.page, live.payload.content)).passed) return { valid: false, reason: 'seo_gate' };
       return live;
     };
 
@@ -161,7 +173,7 @@ export class PublisherPoller {
     const proof = await verify();
     if (!proof.valid) return this.skip(proof.reason);
 
-    const gate = this.seoGate(proof.page.properties);
+    const gate = await this.seoGate(client, proof.page, proof.payload.content);
     if (!gate.passed) {
       const reason = `Publishing blocked by SEO gate: score ${gate.score}/${SEO_PASS_SCORE}`
         + (gate.missing.length ? `; missing ${gate.missing.join(', ')}` : '');
